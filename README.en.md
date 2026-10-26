@@ -290,7 +290,11 @@ However, different mods implement `CharacterModel` differently:
 - A few may fail during `Player.CreateForNewRun`
 - On failure, the mod falls back to Ironclad/Silent and writes the error to the log
 
-### 6. Not a Network Multiplayer Mod
+### 6. Chat Box Temporarily Disabled
+
+The in-game chat box and AI conversation input are temporarily disabled for performance optimization. The AI teammate still acts automatically; chat will return later.
+
+### 7. Not a Network Multiplayer Mod
 
 This is a **local, simulated two-player run**:
 

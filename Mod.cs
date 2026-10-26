@@ -1845,12 +1845,12 @@ public static partial class CompanionMod
                 };
                 countRow.AnchorLeft = 0.5f;
                 countRow.AnchorRight = 0.5f;
-                countRow.AnchorTop = 1f;
-                countRow.AnchorBottom = 1f;
+                countRow.AnchorTop = 0f;
+                countRow.AnchorBottom = 0f;
                 countRow.OffsetLeft = -180f;
                 countRow.OffsetRight = 180f;
-                countRow.OffsetTop = -166f;
-                countRow.OffsetBottom = -122f;
+                countRow.OffsetTop = 74f;
+                countRow.OffsetBottom = 112f;
                 countRow.AddThemeConstantOverride("separation", 8);
                 screen.AddChild(countRow);
             }
