@@ -6,7 +6,7 @@
 
 单进程双人档（本地 netId=1 + 模拟 AI netId=2）已跑通：
 **事件 → 地图 → 战斗出牌 → 选牌/弃牌 → AI 领奖**。
-商店仍会卡；宝箱/章节转场已处理，底层 `PlayerChoiceSynchronizer` 未攻破。
+商店 15 秒自动离开；宝箱/章节转场已处理，Boss 遗物/底层选择仍有风险。
 卡住时按 **F10 切视角**人工接管。
 
 2026-10-26 做了一轮性能/正确性优化（§8），构建 0 警告；**尚未实机跑过**，先看 §8 清单。
@@ -249,8 +249,8 @@ RewardsSetSynchronizer.SkipRewardsSetOnStackTopForPlayer(Player) // private，�
 
 ## 9. 未解决
 
-1. **商店**：AI 不买，也不自动离开；商店界面开着时地图会暂停自动旅行，需本地点离开。
-   Boss 遗物如果走 `RelicSelectCmd.FromChooseARelicScreen` 的远程选择，单人档仍可能卡。
+1. **Boss 遗物**：如果走 `RelicSelectCmd.FromChooseARelicScreen` 的远程选择，单人档仍可能卡。
+   商店已改为 15 秒自动点离开。
 2. **`PlayerChoiceSynchronizer`**：走 `ReserveChoiceId/WaitForRemoteChoice/SyncLocalChoice`
    这层 AI 就永远等不到应答（`待应答选择>0`）。先搞清 `PlayerChoiceResult` 类型，选错更糟。
 3. **AI 阵亡后跳过回合**：已加 `UndoReadyToEndTurn` 缓解，未实机验证。
@@ -285,7 +285,7 @@ dotnet .\tools\ildump\bin\Release\net10.0\ildump.dll  $STS2 .\il.txt Runs.RunMan
 ## 12. 下一步
 
 1. 实机验证 §8 清单，跑一局确认无 `coop-watch:`。
-2. 按 §9 攻：① 商店 → ② `PlayerChoiceSynchronizer` → ④ 奖励边界。
+2. 按 §9 攻：① Boss 遗物 → ② `PlayerChoiceSynchronizer` → ④ 奖励边界。
 
 ## 13. 禁忌
 

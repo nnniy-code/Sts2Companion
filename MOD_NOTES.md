@@ -35,11 +35,12 @@ AI 通过私有 `RestSiteSynchronizer.ChooseOption(Player, int)` 选治疗/锻�
 避免把休息点跳过导致房间状态为 null、后面进不去。
 日志前缀：`coop-rest:` / `coop-map: 休息点未选完`。
 
-### 2. 商店（Shop）—— 中高风险
+### 2. 商店（Shop）—— 已处理
 
-AI 不买也不离开。若离开商店需要"双方确认"，会卡。
+AI 不买，但进入 15 秒后会自动点 `NMerchantRoom.ProceedButton.ForceClick()` 离开。
 
-- 看门狗会显示：`房间=MerchantRoom`
+- 商店界面还开着时，地图自动旅行暂停；离开后恢复。
+- 日志：`coop-shop:` / `coop-map: 商店界面还开着`。
 
 ### 3. 宝箱 / 遗物选择 —— 已处理
 
@@ -212,7 +213,7 @@ coop-watch:   选牌器=已挂上 待应答选择=0
 - 多选按 `min/max` 取（min=0、max=2~3 时取满），AI 动作完成前不卸 selector。
 - 休息点用私有 `ChooseOption(ai,index)`；锻造时临时挂 selector，地图旅行等双方选完才放行。
 - 宝箱用 `TreasureRoomRelicSynchronizer.OnPicked(ai,0)`；章节转场用 `ActChangeSynchronizer.OnPlayerReady`。
-- 商店界面开着时暂停自动旅行，避免跳过商店。
+- 商店界面开着时暂停自动旅行；15 秒未离开自动点离开按钮。
 - `CoopLoopNode` 复用，不再每次开局新增。
 - `deploy.ps1` 重写：路径自适应、哈希幂等、按需备份、`-DryRun` / `-Launch`。
 
