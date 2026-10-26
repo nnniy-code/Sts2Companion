@@ -1,0 +1,10 @@
+bin/
+obj/
+dist/
+tools/**/bin/
+tools/**/obj/
+.vs/
+*.user
+*.bak
+*.bak_*
+*.log

@@ -1,0 +1,2189 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+using MegaCrit.Sts2.Core.Assets;
+using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Commands;
+using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Entities.Powers;
+using MegaCrit.Sts2.Core.GameActions.Multiplayer;
+using MegaCrit.Sts2.Core.Helpers;
+using MegaCrit.Sts2.Core.Localization;
+using MegaCrit.Sts2.Core.Map;
+using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Characters;
+using MegaCrit.Sts2.Core.Modding;
+using MegaCrit.Sts2.Core.MonsterMoves.Intents;
+using MegaCrit.Sts2.Core.Multiplayer;
+using MegaCrit.Sts2.Core.Multiplayer.Game;
+using MegaCrit.Sts2.Core.Nodes;
+using MegaCrit.Sts2.Core.Nodes.Screens.CharacterSelect;
+using MegaCrit.Sts2.Core.Nodes.Screens.MainMenu;
+using MegaCrit.Sts2.Core.Random;
+using MegaCrit.Sts2.Core.Rooms;
+using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Saves;
+using MegaCrit.Sts2.Core.Unlocks;
+
+namespace Sts2Companion;
+
+/// <summary>
+/// 只读桥接模组：把当前战斗状态写成 JSON，供外部队友程序轮询。
+/// 不改游戏逻辑、不改存档。
+/// </summary>
+[ModInitializer(nameof(Init))]
+public static partial class CompanionMod
+{
+    private static readonly string[] OutputDirs =
+    {
+        @"D:\sts2_companion\state",
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                     "SlayTheSpire2", "sts2_companion"),
+    };
+
+    private static readonly JsonSerializerOptions JsonOpts = new()
+    {
+        WriteIndented = false,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
+    private static readonly Regex BbCode = new(@"\[[^\]]*\]", RegexOptions.Compiled);
+
+    private static string? _outFile;
+    private static string _advicePath = "";
+    private static Timer? _timer;
+    private static string _lastBody = "";
+    private static string _lastError = "";
+    private static long _lastErrorTime;
+    private static int _busy;
+
+    private static Godot.PanelContainer? _panel;
+    private static Godot.Label? _head;
+    private static Godot.Label? _state;
+    private static Godot.RichTextLabel? _body;
+    private static string _uiHead = "";
+    private static string _uiState = "";
+    private static string _uiText = "";
+    private static DateTime _lastBeat = DateTime.MinValue;
+
+    private static Godot.LineEdit? _input;
+    private static bool _panelForce;
+    private static bool _tWasDown;
+    private static bool _escWasDown;
+
+    // 角色选择（含 mod 角色；ModelDb.AllCharacters 是唯一来源）
+    private static Godot.OptionButton? _charLocalOption;
+    private static Godot.OptionButton? _charAiOption;
+    private static List<CharacterModel> _charChoices = new();
+    private static string _charCfgPath = "";
+    private static long _lastCharRefreshMs;
+
+    // 主菜单「单人 + AI」入口 + 两段式选人
+    private static Godot.Control? _coopMenuButton;
+    private static long _menuEntryLastMs;
+    private static long _menuMissLastMs;
+    private static long _menuButtonDiagMs;
+    private static bool _charFlowActive;
+    private static long _charFlowOpenMs;
+    private static int _charFlowStep;
+    private static CharacterModel? _charFlowLocal;
+    private static NCharacterSelectScreen? _charFlowScreen;
+    private static Godot.Button? _charFlowButton;
+    private static Godot.Label? _charFlowHint;
+    private static FieldInfo? _miSingleplayerMenuButton;
+    private static FieldInfo? _miCharacterSelectedButton;
+    private static FieldInfo? _miCharacterEmbarkButton;
+
+    // ---------- 单人+AI 测试入口（阶段1：双人开局验证） ----------
+    private static Godot.Button? _coopButton;
+    private static bool _starting;
+
+    // AI 双人档状态
+    private static bool _aiMode;                       // 当前是否在 AI 双人档里
+    private static int _aiLastTurn = -1;               // AI 上一轮已经处理过的回合号
+    private static long _aiLastDiagMs;                 // 上次 dump 诊断的时间戳
+    private static long _aiLastTickMs;                 // 上次心跳日志时间戳
+    private static long _lastCoopTickMs;               // PollCoopAI 节流时间戳
+    private static CoopLoopNode? _coopLoopNode;        // 复用一个循环节点，避免每次开局都 AddChild
+    private static readonly TimeSpan _aiMapRetryGap = TimeSpan.FromMilliseconds(1500);
+    private static readonly TimeSpan _aiDiagGap = TimeSpan.FromMilliseconds(3000);
+    private static readonly TimeSpan _aiTickGap = TimeSpan.FromMilliseconds(2000);
+
+    // 有选项的房间类型（双人投票会卡 AI）
+    private static readonly string[] ChoiceRoomKeywords = new[]
+    {
+        "Neow", "Ancient", "Event", "Shop", "Treasure", "Rest", "Relic", "Choice", "Select"
+    };
+
+    public static void Init()
+    {
+        foreach (string dir in OutputDirs)
+        {
+            try
+            {
+                Directory.CreateDirectory(dir);
+                _outFile = Path.Combine(dir, "live.json");
+                break;
+            }
+            catch
+            {
+                // 换下一个目录
+            }
+        }
+
+        if (_outFile == null)
+        {
+            LogError("no writable output directory");
+            return;
+        }
+
+        _advicePath = Path.Combine(Path.GetDirectoryName(_outFile)!, "advice.json");
+        _charCfgPath = Path.Combine(Path.GetDirectoryName(_outFile)!, "companion_chars.json");
+        StartBackend();
+        BuildUi();
+
+        // 记下主线程身份，Tick 必须在主线程跑：
+        // Tick → BuildState → SnapshotPlayer/Card 会读 Player、CardModel、本地化对象，
+        // 而 System.Threading.Timer 的回调在线程池上。之前就是直接 Tick()，
+        // godot.log 里能看到 Tick 的调用栈来自 ThreadPoolWorkQueue.Dispatch —— 战斗一忙就崩。
+        _mainThreadId = Environment.CurrentManagedThreadId;
+        _mainCtx = SynchronizationContext.Current;
+        LogError($"ui: Init 主线程={_mainThreadId} SyncContext={(_mainCtx == null ? "null" : _mainCtx.GetType().Name)}");
+
+        _timer = new Timer(_ => RunOnMain(Tick), null, 0, 500);
+    }
+
+    private static int _mainThreadId;
+    private static SynchronizationContext? _mainCtx;
+    private static bool _mainCaptured;
+
+    private static void EnsureMainThreadCaptured()
+    {
+        if (_mainCaptured) return;
+        _mainCaptured = true;
+        _mainThreadId = Environment.CurrentManagedThreadId;
+        _mainCtx ??= SynchronizationContext.Current;
+        LogError($"ui: 主线程已确认 id={_mainThreadId} "
+                 + $"ctx={(_mainCtx == null ? "null" : _mainCtx.GetType().Name)}");
+    }
+
+    /// <summary>
+    /// 保证 action 在 Godot 主线程执行。
+    /// 没有捕获到 SynchronizationContext 时宁可不执行，也不要在后台线程碰游戏对象——
+    /// 那正是无响应/硬崩的来源。
+    /// </summary>
+    private static void RunOnMain(Action action)
+    {
+        if (Environment.CurrentManagedThreadId == _mainThreadId)
+        {
+            try { action(); }
+            catch (Exception ex) { LogError("RunOnMain: " + ex); }
+            return;
+        }
+
+        var ctx = _mainCtx;
+        if (ctx == null) return;
+
+        ctx.Post(_ =>
+        {
+            try { action(); }
+            catch (Exception ex) { LogError("RunOnMain(post): " + ex); }
+        }, null);
+    }
+
+    private static void Tick()
+    {
+        if (Interlocked.Exchange(ref _busy, 1) == 1)
+        {
+            return;
+        }
+
+        try
+        {
+            Dictionary<string, object?> root = BuildState();
+            string body = JsonSerializer.Serialize(root, JsonOpts);
+            if (body != _lastBody)
+            {
+                // 局面没变化就不刷盘；变化时才更新 updated 时间戳。
+                root["updated"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+                string json = JsonSerializer.Serialize(root, JsonOpts);
+
+                string tmp = _outFile + ".tmp";
+                File.WriteAllText(tmp, json);
+                File.Move(tmp, _outFile!, overwrite: true);
+                _lastBody = body;
+                DumpCombat(root, body);
+            }
+
+            RefreshUi(root);
+            Heartbeat();
+        }
+        catch (Exception ex)
+        {
+            LogError(ex.ToString());
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _busy, 0);
+        }
+    }
+
+    private static Dictionary<string, object?> BuildState()
+    {
+        var root = new Dictionary<string, object?>
+        {
+            ["coop"] = _aiMode,
+            ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+        };
+
+        CombatState? state = null;
+        try
+        {
+            state = CombatManager.Instance.DebugOnlyGetState();
+        }
+        catch
+        {
+            // 忽略，按不在战斗处理
+        }
+
+        bool inCombat = state != null && Safe(() => CombatManager.Instance.IsInProgress, false);
+        root["inCombat"] = inCombat;
+        if (!inCombat || state == null)
+        {
+            return root;
+        }
+
+        root["round"] = state.RoundNumber;
+        root["side"] = Safe(() => state.CurrentSide.ToString(), "Unknown");
+        root["combatId"] = Safe(() => CombatManager.Instance.CurrentCombatId?.ToString(), "");
+
+        var players = new List<object?>();
+        foreach (Player p in state.Players)
+        {
+            players.Add(SnapshotPlayer(p));
+        }
+        root["players"] = players;
+        root["turn"] = Safe(() => state.Players[0].PlayerCombatState?.TurnNumber ?? 0, 0);
+
+        var enemies = new List<object?>();
+        IReadOnlyList<Creature> targets = state.PlayerCreatures;
+        foreach (Creature c in state.Enemies)
+        {
+            enemies.Add(SnapshotEnemy(c, targets));
+        }
+        root["enemies"] = enemies;
+
+        return root;
+    }
+
+    private static Dictionary<string, object?> SnapshotPlayer(Player p)
+    {
+        PlayerCombatState? pcs = Safe<PlayerCombatState?>(() => p.PlayerCombatState, null);
+        Creature creature = p.Creature;
+
+        var hand = new List<object?>();
+        var drawPile = new List<string>();
+        var discardPile = new List<string>();
+        if (pcs != null)
+        {
+            foreach (CardModel card in pcs.Hand.Cards)
+            {
+                hand.Add(SnapshotCard(card));
+            }
+            // 两堆只导牌名（不带描述）：控制 JSON 体积，也让模型能推理抽牌/捞牌。
+            foreach (CardModel card in pcs.DrawPile.Cards)
+            {
+                drawPile.Add(Str(() => card.Title, card.Id.Entry));
+            }
+            foreach (CardModel card in pcs.DiscardPile.Cards)
+            {
+                discardPile.Add(Str(() => card.Title, card.Id.Entry));
+            }
+        }
+
+        var relics = new List<string>();
+        foreach (RelicModel relic in Safe<IReadOnlyList<RelicModel>>(() => p.Relics, Array.Empty<RelicModel>()))
+        {
+            // 名字+效果描述：mod 遗物也能直接把机制喂给队友，不用它猜。
+            relics.Add(WithDesc(
+                Str(() => relic.Title.GetFormattedText(), relic.Id.Entry),
+                Clean(Safe(() => new LocString("relics", relic.Id.Entry + ".description").GetFormattedText(), ""))));
+        }
+
+        var potions = new List<string>();
+        foreach (PotionModel? potion in Safe<IReadOnlyList<PotionModel?>>(() => p.PotionSlots, Array.Empty<PotionModel?>()))
+        {
+            if (potion == null)
+            {
+                continue;
+            }
+            potions.Add(WithDesc(
+                Str(() => potion.Title.GetFormattedText(), potion.Id.Entry),
+                Clean(Safe(() => new LocString("potions", potion.Id.Entry + ".description").GetFormattedText(), ""))));
+        }
+
+        var powers = new List<string>();
+        foreach (PowerModel power in Safe<IReadOnlyList<PowerModel>>(() => creature.Powers, Array.Empty<PowerModel>()))
+        {
+            int amount = Safe(() => power.Amount, 0);
+            string title = Str(() => power.Title.GetFormattedText(), power.Id.Entry);
+            powers.Add(amount != 0 ? $"{title} {amount}" : title);
+        }
+
+        return new Dictionary<string, object?>
+        {
+            ["name"] = Str(() => creature.Name, p.Character.Id.Entry),
+            ["netId"] = p.NetId,
+            ["hp"] = Safe(() => creature.CurrentHp, 0),
+            ["maxHp"] = Safe(() => creature.MaxHp, 0),
+            ["block"] = Safe(() => creature.Block, 0),
+            ["energy"] = pcs == null ? 0 : Safe(() => pcs.Energy, 0),
+            ["maxEnergy"] = pcs == null ? 0 : Safe(() => pcs.MaxEnergy, 0),
+            ["stars"] = pcs == null ? 0 : Safe(() => pcs.Stars, 0),
+            ["gold"] = Safe(() => p.Gold, 0),
+            ["hand"] = hand,
+            ["drawPile"] = drawPile,
+            ["discardPile"] = discardPile,
+            ["drawCount"] = pcs == null ? 0 : pcs.DrawPile.Cards.Count,
+            ["discardCount"] = pcs == null ? 0 : pcs.DiscardPile.Cards.Count,
+            ["exhaustCount"] = pcs == null ? 0 : pcs.ExhaustPile.Cards.Count,
+            ["relics"] = relics,
+            ["potions"] = potions,
+            ["powers"] = powers,
+        };
+    }
+
+    private static string WithDesc(string name, string desc)
+    {
+        return desc.Length > 0 ? $"{name}：{desc}" : name;
+    }
+
+    private static Dictionary<string, object?> SnapshotCard(CardModel card)
+    {
+        int cost = Safe(() => card.EnergyCost.CostsX ? -1 : card.EnergyCost.GetWithModifiers(CostModifiers.All), 0);
+        return new Dictionary<string, object?>
+        {
+            ["name"] = Str(() => card.Title, card.Id.Entry),
+            ["cost"] = cost,
+            ["upgraded"] = Safe(() => card.IsUpgraded, false),
+            ["type"] = Safe(() => card.Type.ToString(), ""),
+            ["desc"] = Clean(Safe(() => card.Description.GetFormattedText(), "")),
+        };
+    }
+
+    private static Dictionary<string, object?> SnapshotEnemy(Creature c, IReadOnlyList<Creature> targets)
+    {
+        var intents = new List<string>();
+        int damage = 0;
+        try
+        {
+            MonsterModel? monster = c.Monster;
+            if (monster != null)
+            {
+                foreach (AbstractIntent intent in monster.NextMove.Intents)
+                {
+                    intents.Add(Str(() => intent.GetIntentLabel(targets, c).GetFormattedText(),
+                                    intent.IntentType.ToString()));
+
+                    // 攻击意图额外给出实际伤害（已算力量/虚弱等修正，多次攻击已乘段数），
+                    // 让队友能直接算账，不用自己猜意图文字里的数字。
+                    if (intent is AttackIntent attack)
+                    {
+                        int hit = Safe(() => attack.GetTotalDamage(targets, c), 0);
+                        if (hit > 0)
+                        {
+                            damage += hit;
+                        }
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // 意图读取失败就给空列表
+        }
+
+        var powers = new List<string>();
+        foreach (PowerModel power in Safe<IReadOnlyList<PowerModel>>(() => c.Powers, Array.Empty<PowerModel>()))
+        {
+            int amount = Safe(() => power.Amount, 0);
+            string title = Str(() => power.Title.GetFormattedText(), power.Id.Entry);
+            powers.Add(amount != 0 ? $"{title} {amount}" : title);
+        }
+
+        return new Dictionary<string, object?>
+        {
+            ["name"] = Str(() => c.Name, "?"),
+            ["hp"] = Safe(() => c.CurrentHp, 0),
+            ["maxHp"] = Safe(() => c.MaxHp, 0),
+            ["block"] = Safe(() => c.Block, 0),
+            ["intents"] = intents,
+            ["damage"] = damage,
+            ["powers"] = powers,
+        };
+    }
+
+    private static string Clean(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return "";
+        }
+        text = BbCode.Replace(text, "").Replace("\n", " ").Replace("\r", " ").Trim();
+        return text.Length <= 80 ? text : text.Substring(0, 80) + "…";
+    }
+
+    private static string Str(Func<string?> get, string fallback)
+    {
+        try
+        {
+            string? value = get();
+            return string.IsNullOrWhiteSpace(value) ? fallback : value!;
+        }
+        catch
+        {
+            return fallback;
+        }
+    }
+
+    private static T Safe<T>(Func<T> get, T fallback)
+    {
+        try
+        {
+            return get();
+        }
+        catch
+        {
+            return fallback;
+        }
+    }
+
+    // ---------- 存活心跳：游戏关掉后让后台队友自己退出 ----------
+
+    private static void Heartbeat()
+    {
+        try
+        {
+            if ((DateTime.UtcNow - _lastBeat).TotalSeconds < 10)
+            {
+                return;
+            }
+            string dir = Path.GetDirectoryName(_outFile!) ?? ".";
+            File.WriteAllText(Path.Combine(dir, "game_alive"),
+                              DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString());
+            _lastBeat = DateTime.UtcNow;
+        }
+        catch
+        {
+            // 心跳写不了不影响主流程
+        }
+    }
+
+    // ---------- 战斗快照留档：出问题时能回看当时导出的字段 ----------
+
+    private static void DumpCombat(Dictionary<string, object?> root, string body)
+    {
+        try
+        {
+            if (!(root.TryGetValue("inCombat", out object? flag) && flag is bool combat && combat))
+            {
+                return;
+            }
+            string dir = Path.GetDirectoryName(_outFile!) ?? ".";
+            string path = Path.Combine(dir, "combat.log");
+            var info = new FileInfo(path);
+            if (info.Exists && info.Length > 1_000_000)
+            {
+                File.Delete(path);
+            }
+            File.AppendAllText(path, DateTime.Now.ToString("HH:mm:ss") + " " + body + "\n");
+        }
+        catch
+        {
+            // 留档失败不影响导出
+        }
+    }
+
+    // ---------- 队友后端自动启动 ----------
+
+    private static void StartBackend()
+    {
+        try
+        {
+            string root = @"D:\sts2_companion";
+            string pythonw = @"D:\ai\.venv\Scripts\pythonw.exe";
+
+            string modDir = Path.GetDirectoryName(typeof(CompanionMod).Assembly.Location) ?? "";
+            string cfg = Path.Combine(modDir, "companion_path.txt");
+            if (File.Exists(cfg))
+            {
+                string[] lines = File.ReadAllLines(cfg);
+                if (lines.Length > 0 && lines[0].Trim().Length > 0)
+                {
+                    root = lines[0].Trim();
+                }
+                if (lines.Length > 1 && lines[1].Trim().Length > 0)
+                {
+                    pythonw = lines[1].Trim();
+                }
+            }
+
+            string agent = Path.Combine(root, "agent.py");
+            if (!File.Exists(agent) || !File.Exists(pythonw))
+            {
+                LogError("backend not found: " + agent + " / " + pythonw);
+                return;
+            }
+
+            string pidFile = Path.Combine(root, "state", "agent.pid");
+            if (File.Exists(pidFile) && int.TryParse(File.ReadAllText(pidFile).Trim(), out int pid))
+            {
+                try
+                {
+                    using Process existing = Process.GetProcessById(pid);
+                    if (!existing.HasExited)
+                    {
+                        return;
+                    }
+                }
+                catch
+                {
+                    // 进程已退出，继续启动
+                }
+            }
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = pythonw,
+                Arguments = "\"" + agent + "\"",
+                WorkingDirectory = root,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            LogError("start backend: " + ex);
+        }
+    }
+
+    // ---------- 游戏内面板 ----------
+
+    private static void BuildUi()
+    {
+        try
+        {
+            if (Godot.Engine.GetMainLoop() is not Godot.SceneTree tree)
+            {
+                return;
+            }
+
+            var layer = new Godot.CanvasLayer { Layer = 100 };
+            var panel = new Godot.PanelContainer
+            {
+                MouseFilter = Godot.Control.MouseFilterEnum.Ignore,
+            };
+
+            var style = new Godot.StyleBoxFlat
+            {
+                BgColor = new Godot.Color(0.09f, 0.08f, 0.11f, 0.90f),
+                BorderColor = new Godot.Color(0.95f, 0.76f, 0.31f, 0.45f),
+            };
+            style.SetCornerRadiusAll(10);
+            style.SetBorderWidthAll(1);
+            style.SetContentMarginAll(12);
+            panel.AddThemeStyleboxOverride("panel", style);
+
+            panel.AnchorLeft = 1f;
+            panel.AnchorRight = 1f;
+            panel.AnchorTop = 0f;
+            panel.AnchorBottom = 0f;
+            panel.OffsetLeft = -400f;
+            panel.OffsetRight = -16f;
+            panel.OffsetTop = 110f;
+            panel.OffsetBottom = 410f;
+
+            var vbox = new Godot.VBoxContainer
+            {
+                MouseFilter = Godot.Control.MouseFilterEnum.Ignore,
+            };
+            vbox.AddThemeConstantOverride("separation", 6);
+
+            _head = new Godot.Label
+            {
+                Text = "STS2 队友",
+                MouseFilter = Godot.Control.MouseFilterEnum.Ignore,
+            };
+            _head.AddThemeFontSizeOverride("font_size", 15);
+            _head.AddThemeColorOverride("font_color", new Godot.Color(0.95f, 0.76f, 0.31f));
+
+            _state = new Godot.Label
+            {
+                Text = "",
+                AutowrapMode = Godot.TextServer.AutowrapMode.WordSmart,
+                MouseFilter = Godot.Control.MouseFilterEnum.Ignore,
+            };
+            _state.AddThemeFontSizeOverride("font_size", 12);
+            _state.AddThemeColorOverride("font_color", new Godot.Color(0.72f, 0.70f, 0.76f));
+
+            _body = new Godot.RichTextLabel
+            {
+                BbcodeEnabled = false,
+                ScrollActive = true,
+                FitContent = false,
+                AutowrapMode = Godot.TextServer.AutowrapMode.WordSmart,
+                MouseFilter = Godot.Control.MouseFilterEnum.Ignore,
+                SizeFlagsVertical = Godot.Control.SizeFlags.ExpandFill,
+            };
+            _body.AddThemeFontSizeOverride("normal_font_size", 13);
+            _body.AddThemeColorOverride("default_color", new Godot.Color(0.92f, 0.90f, 0.86f));
+
+            _input = new Godot.LineEdit
+            {
+                PlaceholderText = "按 T 输入，Enter 发送，Esc 退出",
+                FocusMode = Godot.Control.FocusModeEnum.All,
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+            };
+            _input.AddThemeFontSizeOverride("font_size", 13);
+            _input.TextSubmitted += OnChatSubmit;
+
+            vbox.AddChild(_head);
+            vbox.AddChild(_state);
+            vbox.AddChild(_body);
+            vbox.AddChild(_input);
+            panel.AddChild(vbox);
+
+            // 独立按钮：不动 panel/vbox 结构，单独 Add 到 layer
+            var coopBtn = new Godot.Button
+            {
+                Text = "AI 双人档",
+                Flat = true,
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+                Position = new Godot.Vector2(1380, 55),  // 屏幕右上，面板正上方
+                Size = new Godot.Vector2(180, 44),
+                ZIndex = 101,
+                Visible = false, // 入口改到主菜单的「单人 + AI」按钮
+            };
+            coopBtn.AddThemeFontSizeOverride("font_size", 22);
+            coopBtn.AddThemeColorOverride("font_color", new Godot.Color(0.92f, 0.80f, 0.45f));
+            coopBtn.AddThemeColorOverride("font_hover_color", new Godot.Color(1f, 0.93f, 0.65f));
+            coopBtn.AddThemeColorOverride("font_pressed_color", new Godot.Color(0.85f, 0.68f, 0.30f));
+            coopBtn.Pressed += OnCoopPressed;
+
+            layer.AddChild(panel);
+            layer.AddChild(coopBtn);
+            tree.Root.AddChild(layer);
+            _kwInstance = new KeyWatcher();
+            tree.Root.AddChild(_kwInstance);
+
+            // 注册 SceneTree.TreeProcessed 信号——这是 SceneTree 级别，永不会被场景切换踢掉！
+            if (_treeForSignals == null)
+            {
+                _treeForSignals = tree;
+                tree.ProcessFrame += OnTreeProcessed;
+                LogError("ui: 注册 ProcessFrame 信号 ✓（SceneTree 级别，永不丢）");
+            }
+
+            // 角色选择条：放在顶部，主菜单也能用；选项来自 ModelDb.AllCharacters（含 mod）。
+            BuildCharacterSelectors(layer);
+
+            // AI 独立循环节点。复用同一个实例：每次点「AI 双人档」都 AddChild
+            // 会在场景树里堆一串节点，虽然 40ms 节流让逻辑不重复，但每帧回调会线性增加。
+            EnsureCoopLoopNode();
+
+            _panel = panel;
+        }
+        catch (Exception ex)
+        {
+            LogError("ui: " + ex);
+        }
+    }
+
+    // ---------- 角色选择（含 mod 角色） ----------
+
+    private static void BuildCharacterSelectors(Godot.CanvasLayer layer)
+    {
+        try
+        {
+            var bar = new Godot.HBoxContainer
+            {
+                Position = new Godot.Vector2(1000, 8),
+                Size = new Godot.Vector2(430, 38),
+                ZIndex = 101,
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+                Visible = false, // 改用主菜单两段式选人；保留控件只做 OpenCoopPressed 的兜底。
+            };
+            bar.AddThemeConstantOverride("separation", 8);
+
+            _charLocalOption = new Godot.OptionButton
+            {
+                CustomMinimumSize = new Godot.Vector2(205, 36),
+                ClipText = true,
+                TooltipText = "本地玩家角色（含 mod；下局生效，改完点 AI 双人档）",
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+            };
+            _charAiOption = new Godot.OptionButton
+            {
+                CustomMinimumSize = new Godot.Vector2(205, 36),
+                ClipText = true,
+                TooltipText = "AI 队友角色（含 mod；下局生效，改完点 AI 双人档）",
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+            };
+            _charLocalOption.AddThemeFontSizeOverride("font_size", 15);
+            _charAiOption.AddThemeFontSizeOverride("font_size", 15);
+            _charLocalOption.ItemSelected += _ => SaveCharacterChoice();
+            _charAiOption.ItemSelected += _ => SaveCharacterChoice();
+
+            bar.AddChild(_charLocalOption);
+            bar.AddChild(_charAiOption);
+            layer.AddChild(bar);
+
+            RefreshCharacterOptions();
+            LoadCharacterChoice();
+        }
+        catch (Exception ex)
+        {
+            LogError("chars: UI: " + ex.Message);
+        }
+    }
+
+    private static void RefreshCharacterOptions()
+    {
+        string oldLocal = Safe(() => SelectedCharacter(_charLocalOption)?.Id.Entry ?? "", "");
+        string oldAi = Safe(() => SelectedCharacter(_charAiOption)?.Id.Entry ?? "", "");
+
+        List<CharacterModel> chars;
+        try
+        {
+            chars = ModelDb.AllCharacters
+                .Where(c => c != null)
+                .OrderBy(c => c.Id.Entry, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch
+        {
+            chars = new List<CharacterModel>();
+        }
+
+        // 极端情况下 ModelDb 还没准备好：至少保留原版两人，别让按钮空着。
+        if (chars.Count == 0)
+        {
+            try { chars.Add(ModelDb.Character<Ironclad>()); } catch { }
+            try { chars.Add(ModelDb.Character<Silent>()); } catch { }
+        }
+
+        _charChoices = chars;
+        _charLocalOption?.Clear();
+        _charAiOption?.Clear();
+        for (int i = 0; i < chars.Count; i++)
+        {
+            CharacterModel c = chars[i];
+            string id = Safe(() => c.Id.Entry, "?");
+            string name = Safe(() => c.Title.GetFormattedText(), id);
+            name = Clean(name);
+            if (name.Length > 22) name = name.Substring(0, 22) + "…";
+            _charLocalOption?.AddItem("我: " + name, i);
+            _charAiOption?.AddItem("AI: " + name, i);
+        }
+
+        if (chars.Count > 0)
+        {
+            int local = IndexOfCharacter(oldLocal);
+            if (local < 0) local = IndexOfCharacter("IRONCLAD");
+            int ai = IndexOfCharacter(oldAi);
+            if (ai < 0) ai = IndexOfCharacter("SILENT");
+            if (_charLocalOption != null) _charLocalOption.Selected = local >= 0 ? local : 0;
+            if (_charAiOption != null) _charAiOption.Selected = ai >= 0 ? ai : Math.Min(1, chars.Count - 1);
+        }
+    }
+
+    /// <summary>
+    /// ModelDb 可能在 mod Init 之后才填满；主菜单期间每 3 秒检查一次，
+    /// 有新的 mod 角色就刷新下拉框（保留当前选择）。
+    /// </summary>
+    private static void EnsureCharacterOptions()
+    {
+        long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (nowMs - _lastCharRefreshMs < 3000) return;
+        _lastCharRefreshMs = nowMs;
+
+        int total = Safe(() => ModelDb.AllCharacters.Count(), 0);
+        if (total > _charChoices.Count)
+        {
+            RefreshCharacterOptions();
+            LogError($"chars: 发现 {total} 个角色，已刷新下拉框");
+        }
+    }
+
+    private static int IndexOfCharacter(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return -1;
+        for (int i = 0; i < _charChoices.Count; i++)
+        {
+            if (string.Equals(Safe(() => _charChoices[i].Id.Entry, ""), id,
+                              StringComparison.OrdinalIgnoreCase))
+            {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static CharacterModel? SelectedCharacter(Godot.OptionButton? option)
+    {
+        if (option == null) return null;
+        int index = option.Selected;
+        if (index >= 0 && index < _charChoices.Count) return _charChoices[index];
+        return null;
+    }
+
+    private static void LoadCharacterChoice()
+    {
+        try
+        {
+            if (_charCfgPath.Length == 0 || !File.Exists(_charCfgPath)) return;
+            var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(_charCfgPath));
+            if (dict == null) return;
+
+            if (dict.TryGetValue("local", out string? localId))
+            {
+                int i = IndexOfCharacter(localId);
+                if (i >= 0 && _charLocalOption != null) _charLocalOption.Selected = i;
+            }
+            if (dict.TryGetValue("ai", out string? aiId))
+            {
+                int i = IndexOfCharacter(aiId);
+                if (i >= 0 && _charAiOption != null) _charAiOption.Selected = i;
+            }
+        }
+        catch (Exception ex)
+        {
+            LogError("chars: load: " + ex.Message);
+        }
+    }
+
+    private static void SaveCharacterChoice()
+    {
+        try
+        {
+            if (_charCfgPath.Length == 0) return;
+            var dict = new Dictionary<string, string>
+            {
+                ["local"] = Safe(() => SelectedCharacter(_charLocalOption)?.Id.Entry ?? "", ""),
+                ["ai"] = Safe(() => SelectedCharacter(_charAiOption)?.Id.Entry ?? "", ""),
+            };
+            string? dir = Path.GetDirectoryName(_charCfgPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            File.WriteAllText(_charCfgPath, JsonSerializer.Serialize(dict, JsonOpts));
+        }
+        catch (Exception ex)
+        {
+            LogError("chars: save: " + ex.Message);
+        }
+    }
+
+    private static void RefreshUi(Dictionary<string, object?> root)
+    {
+        if (_panel == null)
+        {
+            return;
+        }
+
+        try
+        {
+            bool inCombat = root.TryGetValue("inCombat", out object? flag) && flag is bool b && b;
+            int round = root.TryGetValue("round", out object? rv) && rv is int ri ? ri : 0;
+            bool show = inCombat || _panelForce;
+            _panel.SetDeferred("visible", show);
+            if (!show)
+            {
+                return;
+            }
+
+            string status = ReadAdvice(out string advice, out int adviceRound, out string ask, out string mate);
+            if (mate.Length == 0)
+            {
+                mate = "队友";
+            }
+            if (adviceRound > 0)
+            {
+                round = adviceRound;
+            }
+
+            string head;
+            string text;
+            if (status == "thinking")
+            {
+                head = inCombat ? $"第{round}回合 · {mate}思考中…" : $"{mate}思考中…";
+                text = ask.Length > 0 ? "你：" + ask : "正在看你的手牌…";
+            }
+            else if (status == "ready")
+            {
+                head = inCombat ? $"第{round}回合 · {mate}建议" : mate;
+                text = ask.Length > 0 ? $"你：{ask}\n\n{mate}：{advice}" : advice;
+            }
+            else
+            {
+                head = inCombat ? $"第{round}回合" : mate;
+                text = "按 T 输入，Enter 发送，Esc 退出";
+            }
+
+            string summary = inCombat ? BuildSummary(root) : "";
+            if (summary != _uiState)
+            {
+                _state?.SetDeferred("text", summary);
+                _uiState = summary;
+            }
+
+            if (head != _uiHead)
+            {
+                _head?.SetDeferred("text", head);
+                _uiHead = head;
+            }
+            if (text != _uiText)
+            {
+                _body?.SetDeferred("text", text);
+                _uiText = text;
+            }
+        }
+        catch
+        {
+            // 面板刷新失败不影响状态导出
+        }
+    }
+
+    // ---------- 对话输入：T 唤起，Enter 发送，Esc 退出 ----------
+
+    private static long _kwHeartbeatMs;
+    private static KeyWatcher? _kwInstance;
+    private static Godot.SceneTree? _treeForSignals;
+
+    /// <summary>
+    /// 注册 TreeProcessed 信号——这是 SceneTree 级别信号，不依赖任何 Node 存活！
+    /// 每帧 Godot 都会发，我们在里面确保 KeyWatcher 活着 + 跑 PollCoopAI。
+    /// </summary>
+    private static void EnsureKeyWatcherAlive()
+    {
+        try
+        {
+            if (_kwInstance == null)
+            {
+                _kwInstance = new KeyWatcher();
+                _kwInstance.Name = "Sts2CompanionKeyWatcher";
+            }
+            if (!_kwInstance.IsInsideTree())
+            {
+                var tree = Godot.Engine.GetMainLoop() as Godot.SceneTree;
+                if (tree != null && tree.Root != null)
+                {
+                    tree.Root.AddChild(_kwInstance);
+                    LogError($"kw: 被踢了 → 加回 Root, inTree={_kwInstance.IsInsideTree()}");
+                }
+            }
+
+            // 注册 TreeProcessed 信号（只注册一次）
+            if (_treeForSignals == null)
+            {
+                var tree = Godot.Engine.GetMainLoop() as Godot.SceneTree;
+                if (tree != null)
+                {
+                    _treeForSignals = tree;
+                    tree.ProcessFrame += OnTreeProcessed;
+                    LogError("kw: 注册 ProcessFrame 信号 ✓");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LogError($"EnsureKeyWatcherAlive: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// SceneTree 级别每帧信号——不管 Root 重建多少次都会触发！
+    /// </summary>
+    private static void OnTreeProcessed()
+    {
+        // 确保 KeyWatcher 存在（场景切换可能丢）
+        EnsureKeyWatcherAlive_Quiet();
+
+        // 主菜单入口必须挂 SceneTree 信号：KeyWatcher 偶尔在菜单场景里不跑。
+        try { PollCoopMenuEntry(); }
+        catch (Exception ex) { LogError("OnTreeProcessed PollCoopMenuEntry: " + ex.Message); }
+
+        // AI 双人档核心逻辑。
+        // 多个驱动点是故意保留的：实测 CoopLoopNode._Process 在某些场景里不生效，
+        // 只留一个会让整个循环停摆。重复调用的开销由 PollCoopAI 内部的 40ms 节流兜住，
+        // 所以三个入口加起来仍然只有 ~25Hz。
+        if (_aiMode)
+        {
+            try { PollCoopAI(); }
+            catch (Exception ex) { LogError("OnTreeProcessed PollCoopAI: " + ex); }
+        }
+    }
+
+    private static void EnsureKeyWatcherAlive_Quiet()
+    {
+        try
+        {
+            if (_kwInstance == null)
+            {
+                _kwInstance = new KeyWatcher();
+                _kwInstance.Name = "Sts2CompanionKeyWatcher";
+            }
+            if (!_kwInstance.IsInsideTree())
+            {
+                var tree = Godot.Engine.GetMainLoop() as Godot.SceneTree;
+                if (tree?.Root != null)
+                {
+                    tree.Root.AddChild(_kwInstance);
+                }
+            }
+        }
+        catch { }
+    }
+
+    private sealed partial class KeyWatcher : Godot.Node
+    {
+        public KeyWatcher()
+        {
+            Name = "Sts2CompanionKeyWatcher";
+        }
+
+        public override void _Process(double delta)
+        {
+            // 心跳降频到 30 秒：它只用于确认节点没被场景切换踢掉，
+            // 每秒一条纯属给主线程和 mod_error.log 增加无意义 IO。
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (now - _kwHeartbeatMs > 30000)
+            {
+                _kwHeartbeatMs = now;
+                LogError($"kw: _Process 心跳, _aiMode={_aiMode}, inTree={IsInsideTree()}");
+            }
+
+            if (!IsInsideTree()) return;
+
+            PollHotkey();
+            PollMenuButton();
+            PollCoopMenuEntry();
+            PollCoopCharacterFlow();
+            EnsureCharacterOptions();
+
+            if (_aiMode) PollCoopAI();
+        }
+    }
+
+    /// <summary>
+    /// 保证场景树里只有一个 CoopLoopNode。重复 AddChild 的节点即使逻辑被节流，
+    /// 每帧回调仍会叠加，长时间反复开局会越来越卡。
+    /// </summary>
+    private static void EnsureCoopLoopNode()
+    {
+        try
+        {
+            if (_coopLoopNode != null
+                && Godot.GodotObject.IsInstanceValid(_coopLoopNode)
+                && _coopLoopNode.IsInsideTree())
+            {
+                return;
+            }
+
+            var tree = Godot.Engine.GetMainLoop() as Godot.SceneTree;
+            if (tree?.Root == null) return;
+
+            _coopLoopNode = new CoopLoopNode();
+            tree.Root.AddChild(_coopLoopNode);
+            LogError($"ui: CoopLoopNode added, parent={_coopLoopNode.GetParent()?.GetType().Name ?? "null"}, "
+                     + $"isInsideTree={_coopLoopNode.IsInsideTree()}");
+        }
+        catch (Exception ex)
+        {
+            LogError("EnsureCoopLoopNode: " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// AI 双人档独立循环节点——每帧 Godot 主线程里同步跑 PollCoopAI。
+    /// 不依赖 KeyWatcher，不受其他逻辑崩溃影响。
+    /// </summary>
+    private sealed class CoopLoopNode : Godot.Node
+    {
+        private long _lastBeatMs;
+
+        public override void _Process(double delta)
+        {
+            if (!_aiMode) return;
+
+            // 心跳只用于确认节点还在驱动；30 秒一条足够，避免每帧/每秒写日志。
+            long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (nowMs - _lastBeatMs >= 30000)
+            {
+                _lastBeatMs = nowMs;
+                LogError("coop loop 心跳：PollCoopAI 仍在被驱动");
+            }
+
+            try
+            {
+                PollCoopAI();
+            }
+            catch (Exception ex)
+            {
+                LogError("coop loop PollCoopAI exception: " + ex);
+            }
+        }
+    }
+
+    // ---------- 主菜单按钮 + 双人开局 ----------
+    // 注：主菜单 AddChild 已证明不可行（NMainMenuScroller + 线程模型问题），
+    // 改为面板内「AI 双人档」按钮触发 OnCoopPressed。PollMenuButton 暂时留空。
+
+    // ---------- 主菜单「单人 + AI」入口 / 两段式选人 ----------
+
+    /// <summary>
+    /// RitsuLib 的 NMainMenuScroller 用私有 _items/_buttons 做滚动布局；
+    /// 直接 AddChild 不会进列。这里反射触发它自己的收集和重排。
+    /// </summary>
+    private static void ReSyncMenuScroller(Godot.Node parent)
+    {
+        try
+        {
+            var type = parent.GetType();
+            var sync = type.GetMethod("SynchronizeItems",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            sync?.Invoke(parent, null);
+
+            var request = type.GetMethod("RequestLayout",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            request?.Invoke(parent, null);
+
+            var refresh = type.GetMethod("RefreshLayout",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            refresh?.Invoke(parent, null);
+
+            var init = type.GetProperty("Initialized",
+                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            var buttons = type.GetField("_buttons",
+                BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(parent) as System.Collections.ICollection;
+            var items = type.GetField("_items",
+                BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(parent) as System.Collections.ICollection;
+            LogError($"menu: 已触发 scroller 重排 init={init?.GetValue(parent)} "
+                     + $"buttons={buttons?.Count} items={items?.Count}");
+            LogMenuLayout(parent);
+        }
+        catch (Exception ex)
+        {
+            LogError("menu: scroller 重排失败: " + ex.Message);
+        }
+    }
+
+    private static void LogMenuLayout(Godot.Node parent)
+    {
+        try
+        {
+            foreach (Godot.Node child in parent.GetChildren())
+            {
+                if (child is NMainMenuTextButton b)
+                {
+                    string label = b.label?.Text ?? "?";
+                    LogError($"menu:   {b.Name} pos={b.Position} size={b.Size} vis={b.Visible} label={label}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LogError("menu: dump layout 失败: " + ex.Message);
+        }
+    }
+
+    private static void PollCoopMenuEntry()
+    {
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (now - _menuEntryLastMs < 500) return;
+        _menuEntryLastMs = now;
+
+        try
+        {
+            var tree = Godot.Engine.GetMainLoop() as Godot.SceneTree;
+            if (tree?.Root == null) return;
+
+            var menu = FindNode<NMainMenu>(tree.Root);
+            if (menu == null)
+            {
+                if (now - _menuMissLastMs > 5000)
+                {
+                    _menuMissLastMs = now;
+                    LogError("menu: 当前不在主菜单（没找到 NMainMenu）");
+                }
+                return;
+            }
+
+            if (_coopMenuButton != null && Godot.GodotObject.IsInstanceValid(_coopMenuButton))
+            {
+                _coopMenuButton.Visible = true;
+                if (_coopMenuButton is NMainMenuTextButton text)
+                {
+                    var label = text.label ?? FindNode<Godot.Label>(text);
+                    if (label != null) label.Text = "和 AI 玩";
+                }
+                if (now - _menuButtonDiagMs > 3000)
+                {
+                    _menuButtonDiagMs = now;
+                    var parentNow = _coopMenuButton.GetParent();
+                    LogError($"menu: 按钮状态 vis={_coopMenuButton.Visible} "
+                             + $"pos={_coopMenuButton.Position} size={_coopMenuButton.Size} "
+                             + $"parent={parentNow?.GetType().Name} children={parentNow?.GetChildCount()}");
+                }
+                return;
+            }
+
+            _miSingleplayerMenuButton ??= typeof(NMainMenu).GetField(
+                "_singleplayerButton",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            var single = _miSingleplayerMenuButton?.GetValue(menu) as Godot.Control;
+            if (single == null)
+            {
+                LogError("menu: 找不到 _singleplayerButton");
+                return;
+            }
+
+            LogError($"menu: 找到 single parent={single.GetParent()?.GetType().Name} "
+                     + $"path={single.GetPath()} pos={single.Position} size={single.Size}");
+
+            var parent = single.GetParent();
+            if (parent == null)
+            {
+                LogError("menu: 单人按钮没有父节点");
+                return;
+            }
+
+            // 优先复制原版「单人游戏」按钮：样式、字号、间距、父容器全部一致，
+            // 这样无论 MainMenuTextButtons 是 VBox 还是绝对布局都能落在同一列。
+            if (single is NMainMenuTextButton textButton)
+            {
+                try
+                {
+                    var clone = (NMainMenuTextButton)textButton.Duplicate();
+                    clone.Name = "CoopAiMenuButton";
+                    parent.AddChild(clone);
+                    // 放在「单人模式」上面：当前窗口高度下，下面会滚出可视区。
+                    try { parent.MoveChild(clone, single.GetIndex()); } catch { }
+
+                    var cloneLabel = clone.label ?? FindNode<Godot.Label>(clone);
+                    if (cloneLabel != null) cloneLabel.Text = "和 AI 玩";
+                    clone.Released += _ => OpenCoopCharacterSelect();
+
+                    // RitsuLib 的 NMainMenuScroller 不会自动把新子节点纳入滚动列：
+                    // 必须手动触发它的 SynchronizeItems + RequestLayout。
+                    ReSyncMenuScroller(parent);
+
+                    _coopMenuButton = clone;
+                    LogError($"menu: 已克隆原版按钮插入「和 AI 玩」 parent={parent.GetType().Name} "
+                             + $"full={parent.GetType().FullName} base={parent.GetType().BaseType?.Name} "
+                             + $"children={parent.GetChildCount()} index={clone.GetIndex()}");
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    LogError("menu: 克隆按钮失败，改用普通按钮: " + ex.Message);
+                }
+            }
+
+            // 兜底：普通按钮
+            var btn = new Godot.Button
+            {
+                Name = "CoopAiMenuButton",
+                Text = "和 AI 玩",
+                Flat = true,
+                Alignment = Godot.HorizontalAlignment.Center,
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+                CustomMinimumSize = new Godot.Vector2(0, 48),
+                SizeFlagsHorizontal = Godot.Control.SizeFlags.ExpandFill,
+                ZIndex = 20,
+            };
+            btn.AddThemeFontSizeOverride("font_size", 30);
+            btn.AddThemeColorOverride("font_color", new Godot.Color(0.92f, 0.80f, 0.45f));
+            btn.AddThemeColorOverride("font_hover_color", new Godot.Color(1f, 0.93f, 0.65f));
+            btn.AddThemeColorOverride("font_pressed_color", new Godot.Color(0.85f, 0.68f, 0.30f));
+            btn.Pressed += OpenCoopCharacterSelect;
+
+            parent.AddChild(btn);
+            try { parent.MoveChild(btn, single.GetIndex()); } catch { }
+
+            if (parent is not Godot.Container)
+            {
+                // 绝对定位的老布局：直接贴到单人按钮下方
+                btn.Position = new Godot.Vector2(single.Position.X, single.Position.Y + single.Size.Y + 8f);
+                btn.Size = single.Size;
+            }
+
+            _coopMenuButton = btn;
+            ReSyncMenuScroller(parent);
+            LogError($"menu: 已插入普通「和 AI 玩」 parent={parent.GetType().Name}");
+        }
+        catch (Exception ex)
+        {
+            LogError("menu: 插入失败: " + ex.Message);
+        }
+    }
+
+    private static void OpenCoopCharacterSelect()
+    {
+        try
+        {
+            if (RunManager.Instance.IsInProgress)
+            {
+                LogError("chars: 当前局还没结束，先退出再选");
+                return;
+            }
+            if (_charFlowActive) return;
+
+            var tree = Godot.Engine.GetMainLoop() as Godot.SceneTree;
+            if (tree?.Root == null) return;
+
+            var stack = FindNode<NMainMenuSubmenuStack>(tree.Root);
+            if (stack == null)
+            {
+                LogError("chars: 找不到 NMainMenuSubmenuStack");
+                return;
+            }
+
+            // 必须按原版 NSingleplayerSubmenu.OpenCharacterSelect 的顺序：
+            // 先 GetSubmenuType + InitializeSingleplayer，再 Push；
+            // 直接 PushSubmenuType 会在未初始化时触发 OnSubmenuOpened，
+            // 某些 UI 插件（RitsuLib 等）会在 RefreshPlayerIcons 里空引用。
+            var screen = stack.GetSubmenuType<NCharacterSelectScreen>();
+            if (screen == null)
+            {
+                LogError("chars: GetSubmenuType 返回 null");
+                return;
+            }
+
+            screen.InitializeSingleplayer();
+            stack.Push(screen);
+
+            _charFlowScreen = screen;
+            _charFlowStep = 0;
+            _charFlowLocal = null;
+            _charFlowActive = true;
+            _charFlowOpenMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            // 隐藏原版「启程」按钮，换成我们自己的两段式按钮。
+            _miCharacterEmbarkButton ??= typeof(NCharacterSelectScreen).GetField(
+                "_embarkButton",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            if (_miCharacterEmbarkButton?.GetValue(screen) is Godot.Control embark)
+            {
+                embark.Visible = false;
+                if (embark is Godot.BaseButton baseButton) baseButton.Disabled = true;
+            }
+
+            var hint = screen.GetNodeOrNull<Godot.Label>("CoopFlowHint");
+            if (hint == null)
+            {
+                hint = new Godot.Label
+                {
+                    Name = "CoopFlowHint",
+                    Text = "第一步：选你玩的角色",
+                    HorizontalAlignment = Godot.HorizontalAlignment.Center,
+                    MouseFilter = Godot.Control.MouseFilterEnum.Ignore,
+                    ZIndex = 100,
+                };
+                hint.AnchorLeft = 0f;
+                hint.AnchorRight = 1f;
+                hint.AnchorTop = 0f;
+                hint.AnchorBottom = 0f;
+                hint.OffsetTop = 26f;
+                hint.OffsetBottom = 66f;
+                hint.AddThemeFontSizeOverride("font_size", 24);
+                hint.AddThemeColorOverride("font_color", new Godot.Color(0.95f, 0.80f, 0.40f));
+                screen.AddChild(hint);
+            }
+            hint.Visible = true;
+            _charFlowHint = hint;
+
+            var next = screen.GetNodeOrNull<Godot.Button>("CoopFlowNext");
+            if (next == null)
+            {
+                next = new Godot.Button
+                {
+                    Name = "CoopFlowNext",
+                    Text = "下一步：选队友（点这里）",
+                    MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+                    ZIndex = 100,
+                };
+                next.AnchorLeft = 0.5f;
+                next.AnchorRight = 0.5f;
+                next.AnchorTop = 1f;
+                next.AnchorBottom = 1f;
+                next.OffsetLeft = -200f;
+                next.OffsetRight = 200f;
+                next.OffsetTop = -110f;
+                next.OffsetBottom = -58f;
+                next.AddThemeFontSizeOverride("font_size", 22);
+                next.Pressed += OnCharFlowNext;
+                screen.AddChild(next);
+            }
+            next.Text = "下一步：选队友（点这里）";
+            next.Visible = true;
+            _charFlowButton = next;
+
+            LogError("chars: 打开两段式选人（第一步=本地）");
+        }
+        catch (Exception ex)
+        {
+            LogError("chars: 打开选人崩: " + ex);
+            _charFlowActive = false;
+        }
+    }
+
+    private static void PollCoopCharacterFlow()
+    {
+        if (!_charFlowActive) return;
+
+        var screen = _charFlowScreen;
+        bool grace = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _charFlowOpenMs < 1500;
+        if (screen != null && Godot.GodotObject.IsInstanceValid(screen)
+            && _miCharacterEmbarkButton?.GetValue(screen) is Godot.Control embark
+            && embark.Visible)
+        {
+            embark.Visible = false;
+            if (embark is Godot.BaseButton baseButton) baseButton.Disabled = true;
+        }
+
+        bool isTop = true;
+        try
+        {
+            var tree = Godot.Engine.GetMainLoop() as Godot.SceneTree;
+            var stack = tree?.Root == null ? null : FindNode<NMainMenuSubmenuStack>(tree.Root);
+            if (stack != null) isTop = ReferenceEquals(stack.Peek(), screen);
+        }
+        catch { }
+
+        if (screen == null || !Godot.GodotObject.IsInstanceValid(screen)
+            || (!grace && (!screen.IsInsideTree() || !isTop)))
+        {
+            _charFlowActive = false;
+            _charFlowScreen = null;
+            _charFlowButton = null;
+            _charFlowHint = null;
+            _charFlowLocal = null;
+            _charFlowStep = 0;
+        }
+    }
+
+    private static CharacterModel? ReadCharacterScreenSelection()
+    {
+        var screen = _charFlowScreen;
+        if (screen == null || !Godot.GodotObject.IsInstanceValid(screen)) return null;
+
+        _miCharacterSelectedButton ??= typeof(NCharacterSelectScreen).GetField(
+            "_selectedButton",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        var btn = _miCharacterSelectedButton?.GetValue(screen) as NCharacterSelectButton;
+        return btn?.Character;
+    }
+
+    private static void OnCharFlowNext()
+    {
+        var selected = ReadCharacterScreenSelection();
+        if (selected == null)
+        {
+            if (_charFlowHint != null) _charFlowHint.Text = "先点一个角色，再点下一步";
+            return;
+        }
+
+        if (_charFlowStep == 0)
+        {
+            _charFlowLocal = selected;
+            _charFlowStep = 1;
+            if (_charFlowHint != null) _charFlowHint.Text = "第二步：选 AI 队友（可以选同一个）";
+            if (_charFlowButton != null) _charFlowButton.Text = "开始双人（点这里）";
+            LogError($"chars: 第一步 我={Safe(() => selected.Id.Entry, "?")}");
+            return;
+        }
+
+        var local = _charFlowLocal;
+        if (local == null)
+        {
+            _charFlowActive = false;
+            return;
+        }
+
+        LogError($"chars: 第二步 AI={Safe(() => selected.Id.Entry, "?")}");
+        CloseCoopCharacterFlow();
+        _ = StartCoopRun(local, selected);
+    }
+
+    private static void CloseCoopCharacterFlow()
+    {
+        _charFlowActive = false;
+        _charFlowScreen = null;
+        _charFlowButton = null;
+        _charFlowHint = null;
+        _charFlowLocal = null;
+        _charFlowStep = 0;
+
+        try
+        {
+            var tree = Godot.Engine.GetMainLoop() as Godot.SceneTree;
+            if (tree?.Root == null) return;
+            var stack = FindNode<NMainMenuSubmenuStack>(tree.Root);
+            if (stack != null && stack.SubmenusOpen) stack.Pop();
+        }
+        catch (Exception ex)
+        {
+            LogError("chars: 关闭选人异常: " + ex.Message);
+        }
+    }
+
+    private static void PollMenuButton()
+    {
+        // 已废弃：主线程 AddChild 到 NMainMenuScroller 也会被自动布局清理
+        // 改成面板按钮方案，见 BuildUi 里的 coopBtn
+    }
+
+    // ---------- AI 双人档辅助：存档标记 + 自动前进 + 自动出牌 ----------
+
+    private static void WriteCoopRunMarker(RunState runState)
+    {
+        try
+        {
+            string dir = Path.GetDirectoryName(_outFile!) ?? ".";
+            string json = JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["coop"] = true,
+                ["startedAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0,
+                ["players"] = runState.Players.Select(p => new
+                {
+                    netId = p.NetId,
+                    character = p.Character.Id.Entry,
+                    isAi = p.NetId == 2uL,
+                }).ToList(),
+            }, JsonOpts);
+            string tmp = Path.Combine(dir, "coop_run.tmp");
+            File.WriteAllText(tmp, json);
+            File.Move(tmp, Path.Combine(dir, "coop_run.json"), overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            LogError("coop marker: " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 每帧在 Godot 主线程里跑：
+    ///   1. 选项房间 → 本地玩家自己选；AI 跟选；两人都选完才 Proceed（CoopAI.cs）
+    ///   2. 地图房间 → 本地玩家先投票；AI 跟票；由游戏自己走旅行流程（CoopAI.cs）
+    ///   3. 战斗场景 → AI 回合自动出牌 + EndTurn
+    /// </summary>
+    private static void PollCoopAI()
+    {
+        // PollCoopAI 的驱动点全是 Godot 回调（ProcessFrame 信号 / Node._Process），
+        // 所以这里是确认"主线程是谁"的最可靠时机；Init 有可能在别的线程上跑。
+        EnsureMainThreadCaptured();
+
+        long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        // 节流到 ~25Hz：游戏主循环可能跑到 300fps，全速跑这套反射逻辑没有意义还会掉帧。
+        // 多个驱动入口共用这一个时间戳，所以无论多少个调用者，总频率都封顶在 25Hz。
+        if (nowMs - _lastCoopTickMs < 40) return;
+        if (_lastCoopTickMs == 0) LogError("coop: PollCoopAI 已启动（25Hz 节流）");
+        _lastCoopTickMs = nowMs;
+
+        try
+        {
+            var runState = Safe(() => RunManager.Instance.DebugOnlyGetState(), (RunState?)null);
+
+            // 心跳：每 2 秒一条（runState=null 也打，确认循环在跑）
+            if (nowMs - _aiLastTickMs >= _aiTickGap.TotalMilliseconds)
+            {
+                _aiLastTickMs = nowMs;
+                if (runState == null)
+                {
+                    LogError("coop tick: runState=null (RunManager 还没 Launch?)");
+                }
+            }
+
+            if (runState == null)
+            {
+                if (_aiMode && Safe(() => !RunManager.Instance.IsInProgress, true))
+                {
+                    _aiMode = false;
+                    _aiLastTurn = -1;
+                }
+                return;
+            }
+
+            // 存档标记补写
+            if (!File.Exists(Path.Combine(Path.GetDirectoryName(_outFile!) ?? ".", "coop_run.json")))
+            {
+                WriteCoopRunMarker(runState);
+            }
+
+            AbstractRoom? curRoom = Safe(() => runState.CurrentRoom, (AbstractRoom?)null);
+            string roomType = curRoom == null ? "null" : curRoom.GetType().Name;
+
+            // 每 3 秒 dump 诊断
+            if (nowMs - _aiLastDiagMs >= _aiDiagGap.TotalMilliseconds)
+            {
+                _aiLastDiagMs = nowMs;
+                var curCoord = Safe(() => runState.CurrentMapCoord, (MapCoord?)null);
+                var rooms = Safe(() => runState.CurrentRoomCount, 0);
+                var visited = Safe(() => runState.VisitedMapCoords.Count, 0);
+                var curPt = Safe(() => runState.CurrentMapPoint?.PointType.ToString() ?? "null", "null");
+                LogError($"coop diag: room={roomType}, coord={curCoord?.col},{curCoord?.row ?? -1}, rooms={rooms}, visited={visited}, curPt={curPt}");
+            }
+
+            // 地图跟票不依赖 CurrentRoom —— 地图界面上它经常是 null，
+            // 所以必须放在下面那个 curRoom==null 的提前 return 之前。
+            CoopMapTick(runState);
+            CoopRewardTick(runState);
+            CoopWatchdog(runState);
+            CoopActChangeTick(runState);
+
+            if (curRoom == null) return;
+
+            // ==============================================================
+            // 分支 1：选项房间 —— AI 跟选；本地玩家自己选；两人都选完才推进（见 CoopAI.cs）
+            if (curRoom is RestSiteRoom restRoom) CoopRestSiteTick(runState, restRoom);
+            if (curRoom is TreasureRoom treasureRoom) CoopTreasureTick(runState, treasureRoom);
+            if (IsChoiceRoom(roomType)) CoopEventTick(runState, curRoom);
+
+            // 分支 2（地图跟票）已在上面 curRoom==null 之前调用，见 CoopMapTick
+
+            // ==============================================================
+            // 分支 3：战斗场景 → AI 出牌 + 结束回合（逻辑在 CoopCombat.cs）
+            // ==============================================================
+            CombatState? cs = Safe(() => CombatManager.Instance.DebugOnlyGetState(), (CombatState?)null);
+            if (cs == null || !Safe(() => CombatManager.Instance.IsInProgress, false)) return;
+
+            CoopCombatTick(cs);
+        }
+        catch (Exception ex)
+        {
+            LogError("PollCoopAI: " + ex);
+        }
+    }
+
+    /// <summary>房间名是否包含任一"有选项"关键字。用循环代替 LINQ，避免 25Hz 下每帧分配闭包。</summary>
+    private static bool IsChoiceRoom(string roomType)
+    {
+        foreach (string keyword in ChoiceRoomKeywords)
+        {
+            if (roomType.Contains(keyword, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static MapPoint? FindNextMapPoint(RunState runState)
+    {
+        try
+        {
+            var map = runState.Map;
+            var cur = Safe(() => runState.CurrentMapCoord, (MapCoord?)null);
+            if (cur == null) return Safe(() => map.StartingMapPoint, (MapPoint?)null);
+
+            // 从当前坐标找下一层的可选点
+            int nextFloor = cur.Value.row + 1;
+            var nextLayer = map.GetPointsInRow(nextFloor);
+            if (nextLayer == null) return null;
+
+            // 过滤掉已访问过的，剩下随便选一个
+            var visited = runState.VisitedMapCoords;
+            foreach (var p in nextLayer)
+            {
+                if (!visited.Contains(p.coord)) return p;
+            }
+            return nextLayer.FirstOrDefault();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string DumpTree(Godot.Node node, int depth, int maxDepth)
+    {
+        if (depth > maxDepth) return "";
+        string indent = new string(' ', depth * 2);
+        Godot.Control? ctrl = node as Godot.Control;
+        string extra = ctrl == null ? ""
+            : $" pos=({ctrl.Position.X:F0},{ctrl.Position.Y:F0}) size=({ctrl.Size.X:F0},{ctrl.Size.Y:F0})";
+        string line = $"{indent}- {node.Name} <{node.GetType().Name}>{extra}\n";
+        foreach (Godot.Node child in node.GetChildren())
+        {
+            line += DumpTree(child, depth + 1, maxDepth);
+        }
+        return line;
+    }
+
+    private static void FindButtonsRecursive(Godot.Node node, ref Godot.Control? single, ref Godot.Control? multi)
+    {
+        if (single != null && multi != null) return;
+        Godot.Control? c = node as Godot.Control;
+        if (c != null)
+        {
+            string cname = c.Name.ToString();
+            if (single == null && (cname.Contains("Single") || cname.Contains("Player") || cname.Contains("Play"))) single = c;
+            if (multi == null && cname.Contains("Multi")) multi = c;
+            // 也看按钮下面的 Label 文字
+            if (single == null || multi == null)
+            {
+                foreach (Godot.Node n in c.GetChildren())
+                {
+                    if (n is Godot.Label lbl)
+                    {
+                        string t = lbl.Text ?? "";
+                        if (single == null && t.Contains("单人")) single = c;
+                        if (multi == null && t.Contains("多人")) multi = c;
+                    }
+                }
+            }
+        }
+        foreach (Godot.Node child in node.GetChildren())
+        {
+            FindButtonsRecursive(child, ref single, ref multi);
+            if (single != null && multi != null) return;
+        }
+    }
+
+    private static void CreateCoopButton(Godot.Control scroller)
+    {
+        var btn = new Godot.Button
+        {
+            Name = "CoopAiButton",
+            Text = "单人+AI",
+            Flat = true,
+            Alignment = Godot.HorizontalAlignment.Center,
+            ZIndex = 100,
+            MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+        };
+        btn.AddThemeFontSizeOverride("font_size", 28);
+        btn.AddThemeColorOverride("font_color", new Godot.Color(0.92f, 0.80f, 0.45f));
+        btn.AddThemeColorOverride("font_hover_color", new Godot.Color(1f, 0.93f, 0.65f));
+        btn.AddThemeColorOverride("font_pressed_color", new Godot.Color(0.85f, 0.68f, 0.30f));
+        btn.Pressed += OnCoopPressed;
+        scroller.AddChild(btn);
+        _coopButton = btn;
+        MenuDiag("button inserted into " + scroller.GetType().Name + ", parent=" + (_coopButton.GetParent()?.GetType().Name ?? "null"));
+    }
+
+    private static void PositionCoopButton(Godot.Control scroller, Godot.Control? single, Godot.Control? multi)
+    {
+        if (_coopButton == null) return;
+        Godot.Control? anchor = multi ?? single;
+        if (anchor == null) return;
+
+        // 锚点按钮正下方 2px 间隙
+        Godot.Vector2 target = new Godot.Vector2(anchor.Position.X, anchor.Position.Y + anchor.Size.Y + 2f);
+
+        if (Math.Abs(_coopButton.Position.X - target.X) > 0.5f ||
+            Math.Abs(_coopButton.Position.Y - target.Y) > 0.5f)
+        {
+            _coopButton.Position = target;
+        }
+        _coopButton.Size = anchor.Size;
+        _coopButton.Visible = true;
+        _coopButton.ZIndex = 100;
+
+        MenuDiag("coop live pos=" + _coopButton.Position + " parent=" + (_coopButton.GetParent()?.GetType().Name ?? "null"));
+    }
+
+    private static T? FindNode<T>(Godot.Node node) where T : Godot.Node
+    {
+        if (node is T match)
+        {
+            return match;
+        }
+        foreach (Godot.Node child in node.GetChildren())
+        {
+            T? found = FindNode<T>(child);
+            if (found != null)
+            {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    private static void MenuDiag(string msg)
+    {
+        // 不去重、直接追加——我们需要看到完整调用轨迹。
+        try
+        {
+            string dir = Path.GetDirectoryName(_outFile!) ?? ".";
+            string path = Path.Combine(dir, "menu_diag.log");
+            if (File.Exists(path) && new FileInfo(path).Length > 200_000)
+            {
+                File.Delete(path);
+            }
+            File.AppendAllText(path, DateTime.Now.ToString("HH:mm:ss ") + msg + "\n");
+        }
+        catch
+        {
+            // 诊断日志写不了就算了
+        }
+    }
+
+    private static async void OnCoopPressed()
+    {
+        await StartCoopRun(null, null);
+    }
+
+    private static async Task StartCoopRun(CharacterModel? chosenLocal, CharacterModel? chosenAi)
+    {
+        if (_starting)
+        {
+            return;
+        }
+
+        // 防重复点击：已经在跑 RunManager 就不允许再 SetUpTest
+        if (RunManager.Instance.IsInProgress)
+        {
+            LogError("coop: RunManager 还在跑（已经在某场局里了），先退出当前 run 再点这个按钮");
+            return;
+        }
+
+        _starting = true;
+        _aiMode = true;
+        _aiLastTurn = -1;
+        _aiLastDiagMs = 0;
+        try
+        {
+            LogError("coop step 1: 创建玩家/Acts");
+
+            // 主菜单两段式选人优先；没有传入时才回退到隐藏下拉框/默认角色。
+            if (chosenLocal == null && chosenAi == null)
+            {
+                RefreshCharacterOptions();
+            }
+            CharacterModel localChar = chosenLocal
+                                       ?? SelectedCharacter(_charLocalOption)
+                                       ?? ModelDb.Character<Ironclad>();
+            CharacterModel aiChar = chosenAi
+                                    ?? SelectedCharacter(_charAiOption)
+                                    ?? ModelDb.Character<Silent>();
+            LogError($"coop: 角色 我={Safe(() => localChar.Id.Entry, "?")} "
+                     + $"AI={Safe(() => aiChar.Id.Entry, "?")}");
+
+            UnlockState unlockMe = SaveManager.Instance.GenerateUnlockStateFromProgress();
+            UnlockState unlockAi = SaveManager.Instance.GenerateUnlockStateFromProgress();
+
+            Player me;
+            try { me = Player.CreateForNewRun(localChar, unlockMe, 1uL); }
+            catch (Exception ex)
+            {
+                LogError($"coop: 角色 {Safe(() => localChar.Id.Entry, "?")} 创建失败，回退 Ironclad: {ex.Message}");
+                me = Player.CreateForNewRun(ModelDb.Character<Ironclad>(), unlockMe, 1uL);
+            }
+
+            Player ai;
+            try { ai = Player.CreateForNewRun(aiChar, unlockAi, 2uL); }
+            catch (Exception ex)
+            {
+                LogError($"coop: 角色 {Safe(() => aiChar.Id.Entry, "?")} 创建失败，回退 Silent: {ex.Message}");
+                ai = Player.CreateForNewRun(ModelDb.Character<Silent>(), unlockAi, 2uL);
+            }
+
+            string seed = SeedHelper.GetRandomSeed();
+            var rng = new Rng(StringHelper.GetDeterministicHashCode(seed), "act_selection");
+            List<ActModel> acts = ActModel.GetRandomList(rng, unlockMe, true)
+                                          .Select(a => a.ToMutable()).ToList();
+
+            LogError($"coop step 2: CreateForNewRun {acts.Count} acts");
+            RunState runState = RunState.CreateForNewRun(
+                new List<Player> { me, ai }, acts, Array.Empty<ModifierModel>(),
+                GameMode.Standard, 0, seed);
+
+            // 关键：跳过 Neow 遗物选择（双人投票会把 AI 卡死）
+            runState.ExtraFields.StartedWithNeow = false;
+
+            LogError("coop step 3: SetUpNewSingleplayer（单人同步器，不卡双人投票）");
+            RunManager.Instance.SetUpNewSingleplayer(runState, shouldSave: true);
+
+            LogError("coop step 4: GenerateRooms");
+            RunManager.Instance.GenerateRooms();
+
+            // 不再废同步器！SetUpNewSingleplayer 创建的是单人同步器
+            // PlayerChoiceSynchronizer 里 NetSingleplayerGameService.Type.IsMultiplayer()=false
+            // → 投票逻辑只关心 netId=1，不会等 AI！
+            LogError("coop step 5: WriteCoopRunMarker");
+            WriteCoopRunMarker(runState);
+
+            // 把 CoopLoopNode 挪这里加（BuildUi 时机太早可能还没 Root）。
+            // EnsureCoopLoopNode 会复用已有节点，反复开局不会越堆越多。
+            EnsureCoopLoopNode();
+
+            // 复刻 NGame.StartRun 的开局流程
+            LogError("coop step 6: NetLoadingHandle + PreloadManager");
+            using (new NetLoadingHandle(RunManager.Instance.NetService))
+            {
+                LogError("coop step 6a: LoadRunAssets");
+                await PreloadManager.LoadRunAssets(runState.Players.Select(p => p.Character));
+                LogError("coop step 6b: LoadActAssets");
+                await PreloadManager.LoadActAssets(runState.Acts[0]);
+                LogError("coop step 6c: FinalizeStartingRelics");
+                await RunManager.Instance.FinalizeStartingRelics();
+                LogError("coop step 6d: Launch");
+                RunManager.Instance.Launch();
+                LogError("coop step 6e: SetCurrentScene NRun.Create");
+                NGame.Instance!.RootSceneContainer.SetCurrentScene(NRun.Create(runState));
+
+                // 场景切换后 KeyWatcher 可能被踢 → 重新 AddChild
+                try
+                {
+                    var tree = Godot.Engine.GetMainLoop() as Godot.SceneTree;
+                    if (tree?.Root != null)
+                    {
+                        // 先踢掉旧的
+                        var old = tree.Root.GetNodeOrNull<KeyWatcher>("Sts2CompanionKeyWatcher");
+                        if (old != null) old.QueueFree();
+
+                        _kwInstance = new KeyWatcher();
+                        tree.Root.AddChild(_kwInstance);
+                        LogError($"coop step 6f: KeyWatcher re-added, inTree={_kwInstance.IsInsideTree()}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogError($"coop step 6f: KeyWatcher re-add 异常: {ex.Message}");
+                }
+
+                LogError("coop step 7: EnterAct(0)");
+                await RunManager.Instance.EnterAct(0, doTransition: false);
+                EnsureKeyWatcherAlive();  // EnterAct 会切场景 → 再补一次
+
+                // 直接绕过 MapRoom，强制进第一间房
+                var startPoint = runState.Map.StartingMapPoint;
+                int startFloor = startPoint.coord.row + 1;
+                LogError($"coop step 8: EnterMapPointInternal floor={startFloor} pointType={startPoint.PointType}");
+                await RunManager.Instance.EnterMapPointInternal(startFloor, startPoint.PointType, null, saveGame: false);
+                EnsureKeyWatcherAlive();  // 进房又切场景 → 再补一次
+                LogError("coop step 9: 全部完成 ✓");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogError("coop 崩溃: " + ex);
+            _aiMode = false;
+        }
+        finally
+        {
+            _starting = false;
+        }
+    }
+
+    private static void PollHotkey()
+    {
+        // F10 切视角：不依赖聊天输入框，所以要放在最前面（_input 为 null 时也要能按）
+        bool f10Down = Godot.Input.IsKeyPressed(Godot.Key.F10);
+        bool f10Pressed = f10Down && !_f10WasDown;
+        _f10WasDown = f10Down;
+        if (f10Pressed && _aiMode)
+        {
+            ToggleView();
+        }
+
+        if (_input == null || !Godot.GodotObject.IsInstanceValid(_input))
+        {
+            return;
+        }
+
+        bool tDown = Godot.Input.IsKeyPressed(Godot.Key.T);
+        bool tPressed = tDown && !_tWasDown;
+        _tWasDown = tDown;
+
+        bool escDown = Godot.Input.IsKeyPressed(Godot.Key.Escape);
+        bool escPressed = escDown && !_escWasDown;
+        _escWasDown = escDown;
+
+        if (tPressed && !_input.HasFocus())
+        {
+            _panelForce = true;
+            if (_panel != null)
+            {
+                _panel.Visible = true;
+            }
+            _input.GrabFocus();
+        }
+        else if (escPressed && _input.HasFocus())
+        {
+            _input.Text = "";
+            _input.ReleaseFocus();
+            _panelForce = false;
+        }
+    }
+
+    private static void OnChatSubmit(string text)
+    {
+        text = text.Trim();
+        if (_input != null)
+        {
+            _input.Text = "";
+        }
+        if (text.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            // 问题写盘，由后台 agent 带上当前局面问模型。
+            string dir = Path.GetDirectoryName(_outFile!) ?? ".";
+            string tmp = Path.Combine(dir, "ask.tmp");
+            File.WriteAllText(tmp, JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["id"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                ["text"] = text,
+            }, JsonOpts));
+            File.Move(tmp, Path.Combine(dir, "ask.json"), overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            LogError("ask: " + ex);
+        }
+    }
+
+    private static string BuildSummary(Dictionary<string, object?> root)
+    {
+        var lines = new List<string>();
+
+        var players = root.TryGetValue("players", out object? pv) ? pv as List<object?> : null;
+        var me = players != null && players.Count > 0 ? players[0] as Dictionary<string, object?> : null;
+        if (me != null)
+        {
+            string line = $"{AsString(me, "name")} {AsInt(me, "hp")}/{AsInt(me, "maxHp")} 血";
+            int block = AsInt(me, "block");
+            if (block > 0)
+            {
+                line += $" · 格挡{block}";
+            }
+            line += $" · {AsInt(me, "energy")}/{AsInt(me, "maxEnergy")} 能量";
+            lines.Add(line);
+
+            var hand = me.TryGetValue("hand", out object? hv) ? hv as List<object?> : null;
+            var names = new List<string>();
+            if (hand != null)
+            {
+                foreach (object? item in hand)
+                {
+                    if (item is Dictionary<string, object?> card)
+                    {
+                        names.Add(AsString(card, "name"));
+                    }
+                }
+            }
+            lines.Add("手牌：" + (names.Count > 0 ? string.Join("、", names) : "无"));
+        }
+
+        var enemies = root.TryGetValue("enemies", out object? ev) ? ev as List<object?> : null;
+        var enemyTexts = new List<string>();
+        if (enemies != null)
+        {
+            foreach (object? item in enemies)
+            {
+                if (item is not Dictionary<string, object?> enemy)
+                {
+                    continue;
+                }
+                string text = $"{AsString(enemy, "name")} {AsInt(enemy, "hp")}/{AsInt(enemy, "maxHp")}";
+                int eblock = AsInt(enemy, "block");
+                if (eblock > 0)
+                {
+                    text += $"(盾{eblock})";
+                }
+                var intents = enemy.TryGetValue("intents", out object? iv) ? iv as List<string> : null;
+                if (intents != null && intents.Count > 0)
+                {
+                    text += " 意图：" + string.Join("、", intents);
+                }
+                else
+                {
+                    text += " 意图：未知";
+                }
+                enemyTexts.Add(text);
+            }
+        }
+        if (enemyTexts.Count > 0)
+        {
+            lines.Add("敌人：" + string.Join("；", enemyTexts));
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private static string AsString(Dictionary<string, object?> dict, string key)
+    {
+        return dict.TryGetValue(key, out object? value) && value != null ? value.ToString() ?? "" : "";
+    }
+
+    private static int AsInt(Dictionary<string, object?> dict, string key)
+    {
+        return dict.TryGetValue(key, out object? value) && value is int number ? number : 0;
+    }
+
+    private static string ReadAdvice(out string text, out int round, out string ask, out string mate)
+    {
+        text = "";
+        ask = "";
+        mate = "";
+        round = 0;
+        try
+        {
+            if (_advicePath.Length == 0 || !File.Exists(_advicePath))
+            {
+                return "";
+            }
+
+            using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(_advicePath));
+            JsonElement root = doc.RootElement;
+            string status = root.TryGetProperty("status", out JsonElement s) ? s.GetString() ?? "" : "";
+            text = root.TryGetProperty("text", out JsonElement t) ? t.GetString() ?? "" : "";
+            ask = root.TryGetProperty("ask", out JsonElement a) ? a.GetString() ?? "" : "";
+            mate = root.TryGetProperty("mate", out JsonElement m) ? m.GetString() ?? "" : "";
+            if (root.TryGetProperty("round", out JsonElement r) && r.TryGetInt32(out int value))
+            {
+                round = value;
+            }
+            return status;
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    private static void LogError(string message)
+    {
+        long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        // 完全相同的消息 5 秒内去重（避免刷屏，但心跳每秒一条能过去）
+        if (message == _lastError && nowMs - _lastErrorTime < 5000)
+        {
+            return;
+        }
+        _lastError = message;
+        _lastErrorTime = nowMs;
+        try
+        {
+            string dir = Path.GetDirectoryName(_outFile) ?? ".";
+            string line = DateTime.Now.ToString("HH:mm:ss") + " " + message + Environment.NewLine;
+            File.AppendAllText(Path.Combine(dir, "mod_error.log"), line);
+        }
+        catch
+        {
+        }
+    }
+}
