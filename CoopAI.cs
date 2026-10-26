@@ -440,11 +440,11 @@ public static partial class CompanionMod
             var inner = ex.InnerException ?? ex;
             // "已经结束"说明这次选择本来就完成了，不是失败
             if (inner.Message.Contains("finish", StringComparison.OrdinalIgnoreCase)) return true;
-            LogError($"coop-event: AI 选崩 index={index}: {inner.Message}");
+            LogError($"coop-event: AI{ai.NetId} 选崩 index={index}: {inner.Message}");
         }
         catch (Exception ex)
         {
-            LogError($"coop-event: AI 选崩 index={index}: {ex.Message}");
+            LogError($"coop-event: AI{ai.NetId} 选崩 index={index}: {ex.Message}");
         }
         return false;
     }
