@@ -1837,7 +1837,31 @@ public static partial class CompanionMod
                 LogError("chars: 当前局还没结束，先退出再选");
                 return;
             }
-            if (_charFlowActive) return;
+            if (_charFlowActive)
+            {
+                bool stillOpen = false;
+                try
+                {
+                    var oldScreen = _charFlowScreen;
+                    var oldTree = Godot.Engine.GetMainLoop() as Godot.SceneTree;
+                    var oldStack = oldTree?.Root == null
+                        ? null
+                        : FindNode<NMainMenuSubmenuStack>(oldTree.Root);
+                    stillOpen = oldScreen != null
+                                && Godot.GodotObject.IsInstanceValid(oldScreen)
+                                && oldScreen.IsInsideTree()
+                                && (oldStack == null || ReferenceEquals(oldStack.Peek(), oldScreen));
+                }
+                catch { }
+
+                if (stillOpen)
+                {
+                    return;
+                }
+
+                LogError("chars: 检测到选人界面已退出，清理旧状态后重开");
+                ResetCharFlowFields();
+            }
 
             var tree = Godot.Engine.GetMainLoop() as Godot.SceneTree;
             if (tree?.Root == null) return;
@@ -2062,17 +2086,22 @@ public static partial class CompanionMod
         if (screen == null || !Godot.GodotObject.IsInstanceValid(screen)
             || (!grace && (!screen.IsInsideTree() || !isTop)))
         {
-            _charFlowActive = false;
-            _charFlowScreen = null;
-            _charFlowButton = null;
-            _charFlowHint = null;
-            _charFlowAiButton = null;
-            _charFlowMinus = null;
-            _charFlowPlus = null;
-            _charFlowCount = null;
-            _charFlowLocal = null;
-            _charFlowStep = 0;
+            ResetCharFlowFields();
         }
+    }
+
+    private static void ResetCharFlowFields()
+    {
+        _charFlowActive = false;
+        _charFlowScreen = null;
+        _charFlowButton = null;
+        _charFlowHint = null;
+        _charFlowAiButton = null;
+        _charFlowMinus = null;
+        _charFlowPlus = null;
+        _charFlowCount = null;
+        _charFlowLocal = null;
+        _charFlowStep = 0;
     }
 
     private static CharacterModel? ReadCharacterScreenSelection()
