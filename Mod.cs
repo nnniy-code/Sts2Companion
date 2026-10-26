@@ -752,12 +752,26 @@ public static partial class CompanionMod
             };
             _apiBox.AddChild(apiSave);
 
+            var closePanel = new Godot.Button
+            {
+                Text = "关闭面板",
+                CustomMinimumSize = new Godot.Vector2(0, 28),
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+            };
+            closePanel.AddThemeFontSizeOverride("font_size", 12);
+            closePanel.Pressed += () =>
+            {
+                _panelForce = false;
+                if (_panel != null) _panel.Visible = false;
+            };
+
             vbox.AddChild(_head);
             vbox.AddChild(_state);
             vbox.AddChild(aiRow);
             vbox.AddChild(_apiBox);
             vbox.AddChild(_body);
             vbox.AddChild(_input);
+            vbox.AddChild(closePanel);
             panel.AddChild(vbox);
 
             ApplyAiConfigToUi();
@@ -1344,6 +1358,13 @@ public static partial class CompanionMod
         if (_apiBox != null) _apiBox.Visible = _useApiBrain;
     }
 
+    private static void OpenAiSettingsPanel()
+    {
+        _panelForce = true;
+        if (_panel != null) _panel.Visible = true;
+        LogError("ai: 打开设置面板");
+    }
+
     private static void ReadApiFieldsFromUi()
     {
         if (_apiBaseEdit != null && _apiBaseEdit.Text.Trim().Length > 0)
@@ -1649,6 +1670,30 @@ public static partial class CompanionMod
             next.Text = "下一步：选队友（点这里）";
             next.Visible = true;
             _charFlowButton = next;
+
+            var aiSettings = screen.GetNodeOrNull<Godot.Button>("CoopAiSettings");
+            if (aiSettings == null)
+            {
+                aiSettings = new Godot.Button
+                {
+                    Name = "CoopAiSettings",
+                    Text = "AI 设置",
+                    MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+                    ZIndex = 100,
+                };
+                aiSettings.AnchorLeft = 1f;
+                aiSettings.AnchorRight = 1f;
+                aiSettings.AnchorTop = 0f;
+                aiSettings.AnchorBottom = 0f;
+                aiSettings.OffsetLeft = -132f;
+                aiSettings.OffsetRight = -24f;
+                aiSettings.OffsetTop = 26f;
+                aiSettings.OffsetBottom = 62f;
+                aiSettings.AddThemeFontSizeOverride("font_size", 16);
+                aiSettings.Pressed += OpenAiSettingsPanel;
+                screen.AddChild(aiSettings);
+            }
+            aiSettings.Visible = true;
 
             LogError("chars: 打开两段式选人（第一步=本地）");
         }

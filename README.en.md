@@ -154,7 +154,7 @@ The AI acts automatically; play your own character normally.
 
 ### AI Source: Local Rules or API
 
-Press **T** to open the right-side panel. The **AI Source** dropdown has:
+Press **T** to open the right-side panel, or click **AI 设置** in the top-right of the character-select screen. The **AI Source** dropdown has:
 
 - **Local rules**: default, offline, uses the mod's built-in combat heuristics.
 - **API (combat)**: calls an OpenAI-compatible `/chat/completions` endpoint to choose the AI's **combat card**.
