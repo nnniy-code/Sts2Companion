@@ -152,6 +152,16 @@ The AI acts automatically; play your own character normally.
 | `F10` | Switch view: temporarily take over the AI, then switch back |
 | `T` | Open the right-side panel / command input |
 
+### Language: Follow Game / Chinese / English
+
+The panel has a **Language** dropdown:
+
+- **Follow game**: reads the current game language; Chinese shows Chinese, other languages fall back to English.
+- **中文**
+- **English**
+
+Changes apply immediately and are saved locally. Runtime game-language changes are followed automatically.
+
 ### AI Source: Local Rules or API
 
 Press **T** to open the right-side panel, or click **AI 设置** in the top-right of the character-select screen. The **AI Source** dropdown has:

@@ -99,7 +99,18 @@ public static partial class CompanionMod
     private static Godot.LineEdit? _apiBaseEdit;
     private static Godot.LineEdit? _apiKeyEdit;
     private static Godot.LineEdit? _apiModelEdit;
+    private static Godot.Button? _apiSaveButton;
+    private static Godot.Button? _panelCloseButton;
+    private static Godot.Label? _aiSourceLabel;
     private static bool _loadingAiCfg;
+
+    // 0=follow game, 1=Chinese, 2=English
+    private static int _langMode;
+    private static string _resolvedLang = "en";
+    private static Godot.Label? _langLabel;
+    private static Godot.OptionButton? _langOption;
+    private static Godot.Button? _charFlowAiButton;
+    private static long _langCheckMs;
 
     // 主菜单「单人 + AI」入口 + 两段式选人
     private static Godot.Control? _coopMenuButton;
@@ -626,7 +637,7 @@ public static partial class CompanionMod
             panel.OffsetLeft = -400f;
             panel.OffsetRight = -16f;
             panel.OffsetTop = 110f;
-            panel.OffsetBottom = 610f;
+            panel.OffsetBottom = 650f;
 
             var vbox = new Godot.VBoxContainer
             {
@@ -636,7 +647,7 @@ public static partial class CompanionMod
 
             _head = new Godot.Label
             {
-                Text = "STS2 队友",
+                Text = Tr("STS2 队友", "STS2 Companion"),
                 MouseFilter = Godot.Control.MouseFilterEnum.Ignore,
             };
             _head.AddThemeFontSizeOverride("font_size", 15);
@@ -665,7 +676,8 @@ public static partial class CompanionMod
 
             _input = new Godot.LineEdit
             {
-                PlaceholderText = "按 T 输入，Enter 发送，Esc 退出",
+                PlaceholderText = Tr("按 T 输入，Enter 发送，Esc 退出",
+                                     "Press T to type, Enter to send, Esc to close"),
                 FocusMode = Godot.Control.FocusModeEnum.All,
                 MouseFilter = Godot.Control.MouseFilterEnum.Stop,
             };
@@ -708,6 +720,46 @@ public static partial class CompanionMod
             };
             aiRow.AddChild(aiLabel);
             aiRow.AddChild(_aiModeOption);
+            _aiSourceLabel = aiLabel;
+
+            var langRow = new Godot.HBoxContainer
+            {
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+            };
+            langRow.AddThemeConstantOverride("separation", 6);
+
+            _langLabel = new Godot.Label
+            {
+                Text = Tr("语言", "Language"),
+                CustomMinimumSize = new Godot.Vector2(58, 0),
+                VerticalAlignment = Godot.VerticalAlignment.Center,
+                MouseFilter = Godot.Control.MouseFilterEnum.Ignore,
+            };
+            _langLabel.AddThemeFontSizeOverride("font_size", 12);
+            _langLabel.AddThemeColorOverride("font_color", new Godot.Color(0.85f, 0.82f, 0.70f));
+
+            _langOption = new Godot.OptionButton
+            {
+                CustomMinimumSize = new Godot.Vector2(180, 30),
+                SizeFlagsHorizontal = Godot.Control.SizeFlags.ExpandFill,
+                TooltipText = Tr("跟随游戏语言；也可以手动锁定中文或 English",
+                                 "Follow the game language, or lock Chinese/English manually"),
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+            };
+            _langOption.AddItem(Tr("跟随游戏", "Follow game"), 0);
+            _langOption.AddItem("中文", 1);
+            _langOption.AddItem("English", 2);
+            _langOption.AddThemeFontSizeOverride("font_size", 12);
+            _langOption.ItemSelected += _ =>
+            {
+                if (_loadingAiCfg) return;
+                _langMode = Math.Clamp(_langOption.Selected, 0, 2);
+                _resolvedLang = PreferredLanguage();
+                ApplyLanguageToUi();
+                SaveAiConfig();
+            };
+            langRow.AddChild(_langLabel);
+            langRow.AddChild(_langOption);
 
             _apiBox = new Godot.VBoxContainer
             {
@@ -751,6 +803,7 @@ public static partial class CompanionMod
                 SaveAiConfig();
             };
             _apiBox.AddChild(apiSave);
+            _apiSaveButton = apiSave;
 
             var closePanel = new Godot.Button
             {
@@ -764,10 +817,12 @@ public static partial class CompanionMod
                 _panelForce = false;
                 if (_panel != null) _panel.Visible = false;
             };
+            _panelCloseButton = closePanel;
 
             vbox.AddChild(_head);
             vbox.AddChild(_state);
             vbox.AddChild(aiRow);
+            vbox.AddChild(langRow);
             vbox.AddChild(_apiBox);
             vbox.AddChild(_body);
             vbox.AddChild(_input);
@@ -1026,7 +1081,7 @@ public static partial class CompanionMod
             string status = ReadAdvice(out string advice, out int adviceRound, out string ask, out string mate);
             if (mate.Length == 0)
             {
-                mate = "队友";
+                mate = Tr("队友", "Teammate");
             }
             if (adviceRound > 0)
             {
@@ -1037,18 +1092,27 @@ public static partial class CompanionMod
             string text;
             if (status == "thinking")
             {
-                head = inCombat ? $"第{round}回合 · {mate}思考中…" : $"{mate}思考中…";
-                text = ask.Length > 0 ? "你：" + ask : "正在看你的手牌…";
+                head = inCombat
+                    ? Tr($"第{round}回合 · {mate}思考中…", $"Round {round} · {mate} is thinking…")
+                    : Tr($"{mate}思考中…", $"{mate} is thinking…");
+                text = ask.Length > 0
+                    ? Tr("你：", "You: ") + ask
+                    : Tr("正在看你的手牌…", "Reading your hand…");
             }
             else if (status == "ready")
             {
-                head = inCombat ? $"第{round}回合 · {mate}建议" : mate;
-                text = ask.Length > 0 ? $"你：{ask}\n\n{mate}：{advice}" : advice;
+                head = inCombat
+                    ? Tr($"第{round}回合 · {mate}建议", $"Round {round} · {mate}'s suggestion")
+                    : mate;
+                text = ask.Length > 0
+                    ? Tr($"你：{ask}\n\n{mate}：{advice}", $"You: {ask}\n\n{mate}: {advice}")
+                    : advice;
             }
             else
             {
-                head = inCombat ? $"第{round}回合" : mate;
-                text = "按 T 输入，Enter 发送，Esc 退出";
+                head = inCombat ? Tr($"第{round}回合", $"Round {round}") : mate;
+                text = Tr("按 T 输入，Enter 发送，Esc 退出",
+                          "Press T to type, Enter to send, Esc to close");
             }
 
             string summary = inCombat ? BuildSummary(root) : "";
@@ -1129,6 +1193,9 @@ public static partial class CompanionMod
     {
         // 确保 KeyWatcher 存在（场景切换可能丢）
         EnsureKeyWatcherAlive_Quiet();
+
+        try { RefreshLanguageIfNeeded(); }
+        catch (Exception ex) { LogError("OnTreeProcessed lang: " + ex.Message); }
 
         // 主菜单入口必须挂 SceneTree 信号：KeyWatcher 偶尔在菜单场景里不跑。
         try { PollCoopMenuEntry(); }
@@ -1267,6 +1334,45 @@ public static partial class CompanionMod
     private static string CoopApiKey() => _apiKey;
     private static string CoopApiModel() => _apiModel;
 
+    private static string Tr(string zh, string en) => _resolvedLang == "zh" ? zh : en;
+
+    private static string GameLanguage()
+    {
+        try
+        {
+            string lang = Safe(() => LocManager.Instance.Language, "");
+            if (lang.StartsWith("zh", StringComparison.OrdinalIgnoreCase)) return "zh";
+            if (lang.StartsWith("en", StringComparison.OrdinalIgnoreCase)) return "en";
+        }
+        catch { }
+
+        string culture = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName;
+        return culture == "zh" ? "zh" : "en";
+    }
+
+    private static string PreferredLanguage()
+    {
+        return _langMode switch
+        {
+            1 => "zh",
+            2 => "en",
+            _ => GameLanguage(),
+        };
+    }
+
+    private static void RefreshLanguageIfNeeded()
+    {
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (now - _langCheckMs < 1000) return;
+        _langCheckMs = now;
+
+        string want = PreferredLanguage();
+        if (want == _resolvedLang) return;
+        _resolvedLang = want;
+        ApplyLanguageToUi();
+        LogError($"lang: 切换为 {_resolvedLang}（mode={_langMode}）");
+    }
+
     private static void LoadAiConfig()
     {
         try
@@ -1294,9 +1400,16 @@ public static partial class CompanionMod
             {
                 _apiKey = key;
             }
+            if (dict.TryGetValue("langMode", out string? langText)
+                && int.TryParse(langText, out int langMode))
+            {
+                _langMode = Math.Clamp(langMode, 0, 2);
+            }
+            _resolvedLang = PreferredLanguage();
 
             LogError($"ai: 配置加载 mode={(_useApiBrain ? "api" : "local")} "
-                     + $"base={_apiBaseUrl} model={_apiModel} key={(_apiKey.Length > 0 ? "已设置" : "空")}");
+                     + $"base={_apiBaseUrl} model={_apiModel} key={(_apiKey.Length > 0 ? "已设置" : "空")} "
+                     + $"lang={_resolvedLang} langMode={_langMode}");
         }
         catch (Exception ex)
         {
@@ -1304,6 +1417,7 @@ public static partial class CompanionMod
         }
         finally
         {
+            _resolvedLang = PreferredLanguage();
             _loadingAiCfg = false;
         }
     }
@@ -1320,12 +1434,14 @@ public static partial class CompanionMod
                 ["baseUrl"] = _apiBaseUrl,
                 ["apiKey"] = _apiKey,
                 ["model"] = _apiModel,
+                ["langMode"] = _langMode.ToString(),
             };
             string? dir = Path.GetDirectoryName(_aiCfgPath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
             File.WriteAllText(_aiCfgPath, JsonSerializer.Serialize(dict, JsonOpts));
             LogError($"ai: 配置已保存 mode={(_useApiBrain ? "api" : "local")} "
-                     + $"base={_apiBaseUrl} model={_apiModel} key={(_apiKey.Length > 0 ? "已设置" : "空")}");
+                     + $"base={_apiBaseUrl} model={_apiModel} key={(_apiKey.Length > 0 ? "已设置" : "空")} "
+                     + $"lang={_resolvedLang} langMode={_langMode}");
         }
         catch (Exception ex)
         {
@@ -1345,7 +1461,9 @@ public static partial class CompanionMod
             if (_apiBaseEdit != null) _apiBaseEdit.Text = _apiBaseUrl;
             if (_apiKeyEdit != null) _apiKeyEdit.Text = _apiKey;
             if (_apiModelEdit != null) _apiModelEdit.Text = _apiModel;
+            if (_langOption != null) _langOption.Selected = _langMode;
             UpdateApiBoxVisibility();
+            ApplyLanguageToUi();
         }
         finally
         {
@@ -1363,6 +1481,82 @@ public static partial class CompanionMod
         _panelForce = true;
         if (_panel != null) _panel.Visible = true;
         LogError("ai: 打开设置面板");
+    }
+
+    private static void ApplyLanguageToUi()
+    {
+        try
+        {
+            if (_head != null) _head.Text = Tr("STS2 队友", "STS2 Companion");
+            if (_aiSourceLabel != null) _aiSourceLabel.Text = Tr("AI 来源", "AI source");
+            if (_aiModeOption != null)
+            {
+                _aiModeOption.SetItemText(0, Tr("本地规则", "Local rules"));
+                _aiModeOption.SetItemText(1, Tr("API（战斗）", "API (combat)"));
+                _aiModeOption.TooltipText = Tr(
+                    "本地规则不联网；API 模式目前只接管战斗出牌，其它流程仍用本地规则",
+                    "Local rules stay offline. API mode controls combat card choice only; other flows stay local.");
+            }
+            if (_apiBaseEdit != null)
+            {
+                _apiBaseEdit.PlaceholderText = Tr(
+                    "Base URL，例如 https://api.openai.com/v1",
+                    "Base URL, e.g. https://api.openai.com/v1");
+            }
+            if (_apiKeyEdit != null)
+            {
+                _apiKeyEdit.PlaceholderText = Tr(
+                    "API Key（只保存在本机 state 目录，可留空）",
+                    "API key (stored locally, may be empty)");
+            }
+            if (_apiModelEdit != null)
+            {
+                _apiModelEdit.PlaceholderText = Tr(
+                    "模型，例如 gpt-4o-mini / deepseek-chat",
+                    "Model, e.g. gpt-4o-mini / deepseek-chat");
+            }
+            if (_apiSaveButton != null) _apiSaveButton.Text = Tr("保存 API 设置", "Save API settings");
+            if (_panelCloseButton != null) _panelCloseButton.Text = Tr("关闭面板", "Close panel");
+            if (_input != null)
+            {
+                _input.PlaceholderText = Tr(
+                    "按 T 输入，Enter 发送，Esc 退出",
+                    "Press T to type, Enter to send, Esc to close");
+            }
+            if (_langLabel != null) _langLabel.Text = Tr("语言", "Language");
+            if (_langOption != null)
+            {
+                _langOption.SetItemText(0, Tr("跟随游戏", "Follow game"));
+                _langOption.SetItemText(1, "中文");
+                _langOption.SetItemText(2, "English");
+                _langOption.TooltipText = Tr(
+                    "跟随游戏语言；也可以手动锁定中文或 English",
+                    "Follow the game language, or lock Chinese/English manually.");
+            }
+            if (_charFlowAiButton != null) _charFlowAiButton.Text = Tr("AI 设置", "AI settings");
+            if (_charFlowHint != null)
+            {
+                _charFlowHint.Text = _charFlowStep == 0
+                    ? Tr("第一步：选你玩的角色", "Step 1: choose your character")
+                    : Tr("第二步：选 AI 队友（可以选同一个）", "Step 2: choose the AI teammate (same is allowed)");
+            }
+            if (_charFlowButton != null)
+            {
+                _charFlowButton.Text = _charFlowStep == 0
+                    ? Tr("下一步：选队友（点这里）", "Next: choose teammate (click here)")
+                    : Tr("开始双人（点这里）", "Start co-op (click here)");
+            }
+            if (_coopMenuButton is NMainMenuTextButton menuText)
+            {
+                var label = menuText.label ?? FindNode<Godot.Label>(menuText);
+                if (label != null) label.Text = Tr("和 AI 玩", "Play with AI");
+            }
+            _uiState = ""; // 让 RefreshUi 重新生成状态摘要
+        }
+        catch (Exception ex)
+        {
+            LogError("lang: apply: " + ex.Message);
+        }
     }
 
     private static void ReadApiFieldsFromUi()
@@ -1467,7 +1661,7 @@ public static partial class CompanionMod
                 if (_coopMenuButton is NMainMenuTextButton text)
                 {
                     var label = text.label ?? FindNode<Godot.Label>(text);
-                    if (label != null) label.Text = "和 AI 玩";
+                    if (label != null) label.Text = Tr("和 AI 玩", "Play with AI");
                 }
                 if (now - _menuButtonDiagMs > 3000)
                 {
@@ -1513,7 +1707,7 @@ public static partial class CompanionMod
                     try { parent.MoveChild(clone, single.GetIndex()); } catch { }
 
                     var cloneLabel = clone.label ?? FindNode<Godot.Label>(clone);
-                    if (cloneLabel != null) cloneLabel.Text = "和 AI 玩";
+                    if (cloneLabel != null) cloneLabel.Text = Tr("和 AI 玩", "Play with AI");
                     clone.Released += _ => OpenCoopCharacterSelect();
 
                     // RitsuLib 的 NMainMenuScroller 不会自动把新子节点纳入滚动列：
@@ -1536,7 +1730,7 @@ public static partial class CompanionMod
             var btn = new Godot.Button
             {
                 Name = "CoopAiMenuButton",
-                Text = "和 AI 玩",
+                Text = Tr("和 AI 玩", "Play with AI"),
                 Flat = true,
                 Alignment = Godot.HorizontalAlignment.Center,
                 MouseFilter = Godot.Control.MouseFilterEnum.Stop,
@@ -1627,7 +1821,7 @@ public static partial class CompanionMod
                 hint = new Godot.Label
                 {
                     Name = "CoopFlowHint",
-                    Text = "第一步：选你玩的角色",
+                    Text = Tr("第一步：选你玩的角色", "Step 1: choose your character"),
                     HorizontalAlignment = Godot.HorizontalAlignment.Center,
                     MouseFilter = Godot.Control.MouseFilterEnum.Ignore,
                     ZIndex = 100,
@@ -1651,7 +1845,7 @@ public static partial class CompanionMod
                 next = new Godot.Button
                 {
                     Name = "CoopFlowNext",
-                    Text = "下一步：选队友（点这里）",
+                    Text = Tr("下一步：选队友（点这里）", "Next: choose teammate (click here)"),
                     MouseFilter = Godot.Control.MouseFilterEnum.Stop,
                     ZIndex = 100,
                 };
@@ -1667,7 +1861,7 @@ public static partial class CompanionMod
                 next.Pressed += OnCharFlowNext;
                 screen.AddChild(next);
             }
-            next.Text = "下一步：选队友（点这里）";
+            next.Text = Tr("下一步：选队友（点这里）", "Next: choose teammate (click here)");
             next.Visible = true;
             _charFlowButton = next;
 
@@ -1677,7 +1871,7 @@ public static partial class CompanionMod
                 aiSettings = new Godot.Button
                 {
                     Name = "CoopAiSettings",
-                    Text = "AI 设置",
+                    Text = Tr("AI 设置", "AI settings"),
                     MouseFilter = Godot.Control.MouseFilterEnum.Stop,
                     ZIndex = 100,
                 };
@@ -1694,6 +1888,7 @@ public static partial class CompanionMod
                 screen.AddChild(aiSettings);
             }
             aiSettings.Visible = true;
+            _charFlowAiButton = aiSettings;
 
             LogError("chars: 打开两段式选人（第一步=本地）");
         }
@@ -1734,6 +1929,7 @@ public static partial class CompanionMod
             _charFlowScreen = null;
             _charFlowButton = null;
             _charFlowHint = null;
+            _charFlowAiButton = null;
             _charFlowLocal = null;
             _charFlowStep = 0;
         }
@@ -1756,7 +1952,11 @@ public static partial class CompanionMod
         var selected = ReadCharacterScreenSelection();
         if (selected == null)
         {
-            if (_charFlowHint != null) _charFlowHint.Text = "先点一个角色，再点下一步";
+            if (_charFlowHint != null)
+            {
+                _charFlowHint.Text = Tr("先点一个角色，再点下一步",
+                                        "Pick a character first, then click Next");
+            }
             return;
         }
 
@@ -1764,8 +1964,15 @@ public static partial class CompanionMod
         {
             _charFlowLocal = selected;
             _charFlowStep = 1;
-            if (_charFlowHint != null) _charFlowHint.Text = "第二步：选 AI 队友（可以选同一个）";
-            if (_charFlowButton != null) _charFlowButton.Text = "开始双人（点这里）";
+            if (_charFlowHint != null)
+            {
+                _charFlowHint.Text = Tr("第二步：选 AI 队友（可以选同一个）",
+                                        "Step 2: choose the AI teammate (same is allowed)");
+            }
+            if (_charFlowButton != null)
+            {
+                _charFlowButton.Text = Tr("开始双人（点这里）", "Start co-op (click here)");
+            }
             LogError($"chars: 第一步 我={Safe(() => selected.Id.Entry, "?")}");
             return;
         }
@@ -1788,6 +1995,7 @@ public static partial class CompanionMod
         _charFlowScreen = null;
         _charFlowButton = null;
         _charFlowHint = null;
+        _charFlowAiButton = null;
         _charFlowLocal = null;
         _charFlowStep = 0;
 
@@ -2323,13 +2531,15 @@ public static partial class CompanionMod
         var me = players != null && players.Count > 0 ? players[0] as Dictionary<string, object?> : null;
         if (me != null)
         {
-            string line = $"{AsString(me, "name")} {AsInt(me, "hp")}/{AsInt(me, "maxHp")} 血";
+            string line = $"{AsString(me, "name")} {AsInt(me, "hp")}/{AsInt(me, "maxHp")} "
+                          + Tr("血", "HP");
             int block = AsInt(me, "block");
             if (block > 0)
             {
-                line += $" · 格挡{block}";
+                line += Tr($" · 格挡{block}", $" · Block {block}");
             }
-            line += $" · {AsInt(me, "energy")}/{AsInt(me, "maxEnergy")} 能量";
+            line += Tr($" · {AsInt(me, "energy")}/{AsInt(me, "maxEnergy")} 能量",
+                       $" · {AsInt(me, "energy")}/{AsInt(me, "maxEnergy")} Energy");
             lines.Add(line);
 
             var hand = me.TryGetValue("hand", out object? hv) ? hv as List<object?> : null;
@@ -2344,7 +2554,8 @@ public static partial class CompanionMod
                     }
                 }
             }
-            lines.Add("手牌：" + (names.Count > 0 ? string.Join("、", names) : "无"));
+            lines.Add(Tr("手牌：", "Hand: ")
+                      + (names.Count > 0 ? string.Join(Tr("、", ", "), names) : Tr("无", "none")));
         }
 
         var enemies = root.TryGetValue("enemies", out object? ev) ? ev as List<object?> : null;
@@ -2361,23 +2572,23 @@ public static partial class CompanionMod
                 int eblock = AsInt(enemy, "block");
                 if (eblock > 0)
                 {
-                    text += $"(盾{eblock})";
+                    text += Tr($"(盾{eblock})", $" (Block {eblock})");
                 }
                 var intents = enemy.TryGetValue("intents", out object? iv) ? iv as List<string> : null;
                 if (intents != null && intents.Count > 0)
                 {
-                    text += " 意图：" + string.Join("、", intents);
+                    text += Tr(" 意图：", " Intent: ") + string.Join(Tr("、", ", "), intents);
                 }
                 else
                 {
-                    text += " 意图：未知";
+                    text += Tr(" 意图：未知", " Intent: unknown");
                 }
                 enemyTexts.Add(text);
             }
         }
         if (enemyTexts.Count > 0)
         {
-            lines.Add("敌人：" + string.Join("；", enemyTexts));
+            lines.Add(Tr("敌人：", "Enemies: ") + string.Join(Tr("；", "; "), enemyTexts));
         }
 
         return string.Join("\n", lines);

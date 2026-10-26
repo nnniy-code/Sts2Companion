@@ -7,7 +7,8 @@
 - AI source switch: local rules or OpenAI-compatible API
 - API settings in the in-game panel (`T`): Base URL, API key, model
 - API combat card selection with automatic fallback to local rules
-- API settings persisted to `companion_ai.json`
+- Language selector: follow game language / Chinese / English
+- API and language settings persisted to `companion_ai.json`
 
 ### Notes
 
