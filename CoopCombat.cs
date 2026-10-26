@@ -856,8 +856,21 @@ public static partial class CompanionMod
 
             if (!realMultiplayer)
             {
-                // 3/4 人档：必须让第 2 个 AI 结束自己的回合，游戏才会把出牌权交给第 3/4 个 AI。
-                // 本地玩家不标记 ready，所以不会把本地回合一起结束。
+                // 3/4 人档：中间的 AI 必须结束自己，游戏才会把出牌权交给下一个 AI；
+                // 但“最后一个 AI”不能标 ready，否则会把本地玩家的回合一起结算掉。
+                var singleAis = CoopAiPlayersInCombat(cs);
+                ulong maxAi = singleAis.Count > 0 ? singleAis.Max(p => p.NetId) : ai.NetId;
+                var singleLocal = CoopLocalPlayerInCombat(cs);
+                bool localCanAct = singleLocal != null
+                                   && Safe(() => singleLocal.Creature?.IsAlive ?? false, false)
+                                   && !Safe(() => CombatManager.Instance.IsPlayerReadyToEndTurn(singleLocal), false);
+
+                if (ai.NetId == maxAi && localCanAct)
+                {
+                    LogError($"coop: AI{ai.NetId} 是最后一个 AI，出牌结束 → 交还本地玩家（不标 ready）");
+                    return;
+                }
+
                 var cmSingle = CombatManager.Instance;
                 if (!Safe(() => cmSingle.IsPlayerReadyToEndTurn(ai), false))
                 {
