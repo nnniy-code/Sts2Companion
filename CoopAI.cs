@@ -623,6 +623,50 @@ public static partial class CompanionMod
         }
     }
 
+    // ---------- 商店：AI 不留店，超时自动离开 ----------
+
+    private static int _shopRoomHash = int.MinValue;
+    private static long _shopSinceMs;
+    private static bool _shopLeftSent;
+
+    private static void CoopShopTick(RunState runState, MerchantRoom room)
+    {
+        int hash = room.GetHashCode();
+        if (hash != _shopRoomHash)
+        {
+            _shopRoomHash = hash;
+            _shopSinceMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            _shopLeftSent = false;
+            LogError("coop-shop: 进入商店");
+        }
+
+        if (_shopLeftSent) return;
+
+        var ui = NMerchantRoom.Instance;
+        if (ui == null) return;
+
+        long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (nowMs - _shopSinceMs < 15000) return;
+
+        try
+        {
+            var proceed = ui.ProceedButton;
+            if (proceed == null)
+            {
+                LogError("coop-shop: 找不到离开按钮");
+                return;
+            }
+
+            _shopLeftSent = true;
+            LogError("coop-shop: 15 秒未离开，自动点离开");
+            proceed.ForceClick();
+        }
+        catch (Exception ex)
+        {
+            LogError("coop-shop: 自动离开失败: " + ex.Message);
+        }
+    }
+
     // ---------- 宝箱 / 遗物 ----------
 
     private static int _treasureRoomHash = int.MinValue;
@@ -813,15 +857,19 @@ public static partial class CompanionMod
             }
         }
 
-        if (runState.CurrentRoom is MerchantRoom && NMerchantRoom.Instance != null)
+        if (runState.CurrentRoom is MerchantRoom)
         {
-            long shopBlockMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            if (shopBlockMs - _mapShopBlockMs > 3000)
+            var shopUi = NMerchantRoom.Instance;
+            if (shopUi != null && shopUi.Visible)
             {
-                _mapShopBlockMs = shopBlockMs;
-                LogError("coop-map: 商店界面还开着，暂停自动旅行（走商店的离开按钮）");
+                long shopBlockMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                if (shopBlockMs - _mapShopBlockMs > 3000)
+                {
+                    _mapShopBlockMs = shopBlockMs;
+                    LogError("coop-map: 商店界面还开着，等自动离开或本地点离开");
+                }
+                return;
             }
-            return;
         }
 
         if (runState.CurrentRoom is TreasureRoom)

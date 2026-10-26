@@ -10,6 +10,11 @@
 - Language selector: follow game language / Chinese / English
 - API and language settings persisted to `companion_ai.json`
 
+### Fixed
+
+- Shop: auto-click the vanilla leave button after 15 seconds to avoid a stall.
+- Shop map guard now only pauses while the shop UI is actually visible.
+
 ### Notes
 
 - API mode currently controls combat card choice only; other flows stay local.

@@ -2122,6 +2122,7 @@ public static partial class CompanionMod
             // ==============================================================
             // 分支 1：选项房间 —— AI 跟选；本地玩家自己选；两人都选完才推进（见 CoopAI.cs）
             if (curRoom is RestSiteRoom restRoom) CoopRestSiteTick(runState, restRoom);
+            if (curRoom is MerchantRoom merchantRoom) CoopShopTick(runState, merchantRoom);
             if (curRoom is TreasureRoom treasureRoom) CoopTreasureTick(runState, treasureRoom);
             if (IsChoiceRoom(roomType)) CoopEventTick(runState, curRoom);
 
