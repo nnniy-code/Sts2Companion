@@ -472,8 +472,6 @@ public static partial class CompanionMod
         }
     }
 
-    private static bool _apiKeyWarned;
-
     /// <summary>
     /// AI 出牌入口：API 模式先问 API，失败/没配置就回退本地规则。
     /// API 只决定"打哪张牌"，目标仍由 ResolveAiTarget 本地选择。
@@ -498,15 +496,6 @@ public static partial class CompanionMod
         try
         {
             string key = CoopApiKey().Trim();
-            if (key.Length == 0)
-            {
-                if (!_apiKeyWarned)
-                {
-                    _apiKeyWarned = true;
-                    LogError("coop-api: 未配置 API Key，回退本地规则");
-                }
-                return null;
-            }
 
             string baseUrl = CoopApiBaseUrl().Trim();
             if (baseUrl.Length == 0) baseUrl = "https://api.openai.com/v1";
@@ -534,7 +523,10 @@ public static partial class CompanionMod
             };
 
             using var req = new HttpRequestMessage(HttpMethod.Post, endpoint);
-            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+            if (key.Length > 0)
+            {
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+            }
             req.Content = new StringContent(
                 JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 

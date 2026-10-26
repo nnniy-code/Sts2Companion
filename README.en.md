@@ -164,7 +164,7 @@ API fields:
 | Field | Example |
 |---|---|
 | Base URL | `https://api.openai.com/v1` |
-| API Key | `sk-...` |
+| API Key | `sk-...` (leave empty for local compatible endpoints) |
 | Model | `gpt-4o-mini` / `deepseek-chat` |
 
 DeepSeek example:

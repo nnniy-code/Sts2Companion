@@ -159,7 +159,7 @@ AI 会自动行动，你正常玩自己的角色即可。
 | 字段 | 例子 |
 |---|---|
 | Base URL | `https://api.openai.com/v1` |
-| API Key | `sk-...` |
+| API Key | `sk-...`（本地兼容接口可留空） |
 | 模型 | `gpt-4o-mini` / `deepseek-chat` |
 
 也可以使用其它 OpenAI 兼容服务，例如 DeepSeek：
