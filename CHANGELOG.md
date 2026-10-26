@@ -11,7 +11,7 @@
 
 ### Fixed
 
-- The last AI no longer marks itself ready, so the local player's turn is not auto-ended/skipped.
+- In singleplayer, AI teammates no longer call `SetReadyToEndTurn`; that API always reports "all players ready" and was ending the local turn.
 
 ### Notes
 

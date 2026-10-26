@@ -856,34 +856,12 @@ public static partial class CompanionMod
 
             if (!realMultiplayer)
             {
-                // 3/4 人档：中间的 AI 必须结束自己，游戏才会把出牌权交给下一个 AI；
-                // 但“最后一个 AI”不能标 ready，否则会把本地玩家的回合一起结算掉。
-                var singleAis = CoopAiPlayersInCombat(cs);
-                ulong maxAi = singleAis.Count > 0 ? singleAis.Max(p => p.NetId) : ai.NetId;
-                var singleLocal = CoopLocalPlayerInCombat(cs);
-                bool localCanAct = singleLocal != null
-                                   && Safe(() => singleLocal.Creature?.IsAlive ?? false, false)
-                                   && !Safe(() => CombatManager.Instance.IsPlayerReadyToEndTurn(singleLocal), false);
-
-                if (ai.NetId == maxAi && localCanAct)
-                {
-                    LogError($"coop: AI{ai.NetId} 是最后一个 AI，出牌结束 → 交还本地玩家（不标 ready）");
-                    return;
-                }
-
-                var cmSingle = CombatManager.Instance;
-                if (!Safe(() => cmSingle.IsPlayerReadyToEndTurn(ai), false))
-                {
-                    try
-                    {
-                        cmSingle.SetReadyToEndTurn(ai, false, null);
-                        LogError($"coop: AI{ai.NetId} 已结束回合（多人档顺序推进）");
-                    }
-                    catch (Exception ex)
-                    {
-                        LogError($"coop: AI{ai.NetId} SetReadyToEndTurn 失败: {ex.Message}");
-                    }
-                }
+                // 单人同步器里 AllPlayersReadyToEndTurn() 永远返回 true：
+                // 只要对任何一个 AI 调 SetReadyToEndTurn，整个玩家回合立刻结算，
+                // 本地玩家就会被“架空”。所以 3/4 人档也绝不能标 AI ready。
+                // 三个 AI 的 PlayerCombatState.Phase 同时是 Play，直接按 2→3→4 出完，
+                // 最后把出牌权留给本地玩家。
+                LogError($"coop: AI{ai.NetId} 出牌结束（单人档不标 ready，继续下一个 AI/本地）");
                 return;
             }
 
