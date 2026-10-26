@@ -65,6 +65,18 @@ Notes:
 
 ---
 
+## Dependencies
+
+**Required dependencies: none.**
+
+The mod only uses the game's own `sts2.dll` / `GodotSharp.dll`; it does not call BaseLib, MinionLib, or RitsuLib code.
+
+- **RitsuLib**: optional. If installed, the `和 AI 玩` button is integrated into its scrolling main-menu column; without it, the vanilla main-menu layout is used.
+- **BaseLib / MinionLib**: not required by this mod. You only need them if a **modded character you select** requires them.
+- The `dependencies` field in `Sts2Companion.json` stays empty; no prerequisite is forced.
+
+---
+
 ## Installation
 
 ### 1. Download

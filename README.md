@@ -60,6 +60,18 @@ AI 队友会自动处理：
 
 ---
 
+## 依赖
+
+**必需依赖：无。**
+
+本 Mod 只使用游戏本体的 `sts2.dll` / `GodotSharp.dll`，不调用 BaseLib、MinionLib 或 RitsuLib 的代码。
+
+- **RitsuLib**：可选。装了之后「和 AI 玩」会集成到它的主菜单滚动列；没装则使用原版主菜单布局。
+- **BaseLib / MinionLib**：本 Mod 不依赖。只有你选择的 **Mod 角色本身**依赖它们时，才需要安装。
+- `Sts2Companion.json` 里的 `dependencies` 保持空数组，不强制任何前置。
+
+---
+
 ## 安装
 
 ### 1. 下载
