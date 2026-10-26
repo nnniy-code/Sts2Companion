@@ -124,6 +124,11 @@ public static partial class CompanionMod
     private static NCharacterSelectScreen? _charFlowScreen;
     private static Godot.Button? _charFlowButton;
     private static Godot.Label? _charFlowHint;
+    private static Godot.Button? _charFlowMinus;
+    private static Godot.Button? _charFlowPlus;
+    private static Godot.Label? _charFlowCount;
+    private static int _partySize = 3;
+    private static readonly CharacterModel?[] _flowChars = new CharacterModel?[4];
     private static FieldInfo? _miSingleplayerMenuButton;
     private static FieldInfo? _miCharacterSelectedButton;
     private static FieldInfo? _miCharacterEmbarkButton;
@@ -134,7 +139,6 @@ public static partial class CompanionMod
 
     // AI 双人档状态
     private static bool _aiMode;                       // 当前是否在 AI 双人档里
-    private static int _aiLastTurn = -1;               // AI 上一轮已经处理过的回合号
     private static long _aiLastDiagMs;                 // 上次 dump 诊断的时间戳
     private static long _aiLastTickMs;                 // 上次心跳日志时间戳
     private static long _lastCoopTickMs;               // PollCoopAI 节流时间戳
@@ -1534,18 +1538,7 @@ public static partial class CompanionMod
                     "Follow the game language, or lock Chinese/English manually.");
             }
             if (_charFlowAiButton != null) _charFlowAiButton.Text = Tr("AI 设置", "AI settings");
-            if (_charFlowHint != null)
-            {
-                _charFlowHint.Text = _charFlowStep == 0
-                    ? Tr("第一步：选你玩的角色", "Step 1: choose your character")
-                    : Tr("第二步：选 AI 队友（可以选同一个）", "Step 2: choose the AI teammate (same is allowed)");
-            }
-            if (_charFlowButton != null)
-            {
-                _charFlowButton.Text = _charFlowStep == 0
-                    ? Tr("下一步：选队友（点这里）", "Next: choose teammate (click here)")
-                    : Tr("开始双人（点这里）", "Start co-op (click here)");
-            }
+            if (_charFlowActive) UpdateCharFlowUi();
             if (_coopMenuButton is NMainMenuTextButton menuText)
             {
                 var label = menuText.label ?? FindNode<Godot.Label>(menuText);
@@ -1802,6 +1795,8 @@ public static partial class CompanionMod
             _charFlowScreen = screen;
             _charFlowStep = 0;
             _charFlowLocal = null;
+            _partySize = 3;
+            for (int i = 0; i < _flowChars.Length; i++) _flowChars[i] = null;
             _charFlowActive = true;
             _charFlowOpenMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
@@ -1839,6 +1834,76 @@ public static partial class CompanionMod
             hint.Visible = true;
             _charFlowHint = hint;
 
+            var countRow = screen.GetNodeOrNull<Godot.HBoxContainer>("CoopFlowCountRow");
+            if (countRow == null)
+            {
+                countRow = new Godot.HBoxContainer
+                {
+                    Name = "CoopFlowCountRow",
+                    MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+                    ZIndex = 100,
+                };
+                countRow.AnchorLeft = 0.5f;
+                countRow.AnchorRight = 0.5f;
+                countRow.AnchorTop = 1f;
+                countRow.AnchorBottom = 1f;
+                countRow.OffsetLeft = -180f;
+                countRow.OffsetRight = 180f;
+                countRow.OffsetTop = -166f;
+                countRow.OffsetBottom = -122f;
+                countRow.AddThemeConstantOverride("separation", 8);
+                screen.AddChild(countRow);
+            }
+
+            _charFlowMinus = countRow.GetNodeOrNull<Godot.Button>("CoopFlowMinus");
+            if (_charFlowMinus == null)
+            {
+                _charFlowMinus = new Godot.Button
+                {
+                    Name = "CoopFlowMinus",
+                    Text = "－",
+                    CustomMinimumSize = new Godot.Vector2(44, 40),
+                    MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+                };
+                _charFlowMinus.AddThemeFontSizeOverride("font_size", 20);
+                _charFlowMinus.Pressed += OnPartyMinus;
+                countRow.AddChild(_charFlowMinus);
+            }
+
+            _charFlowCount = countRow.GetNodeOrNull<Godot.Label>("CoopFlowCount");
+            if (_charFlowCount == null)
+            {
+                _charFlowCount = new Godot.Label
+                {
+                    Name = "CoopFlowCount",
+                    HorizontalAlignment = Godot.HorizontalAlignment.Center,
+                    VerticalAlignment = Godot.VerticalAlignment.Center,
+                    SizeFlagsHorizontal = Godot.Control.SizeFlags.ExpandFill,
+                    MouseFilter = Godot.Control.MouseFilterEnum.Ignore,
+                };
+                _charFlowCount.AddThemeFontSizeOverride("font_size", 16);
+                _charFlowCount.AddThemeColorOverride("font_color", new Godot.Color(0.90f, 0.86f, 0.72f));
+                countRow.AddChild(_charFlowCount);
+            }
+
+            _charFlowPlus = countRow.GetNodeOrNull<Godot.Button>("CoopFlowPlus");
+            if (_charFlowPlus == null)
+            {
+                _charFlowPlus = new Godot.Button
+                {
+                    Name = "CoopFlowPlus",
+                    Text = "＋",
+                    CustomMinimumSize = new Godot.Vector2(44, 40),
+                    MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+                };
+                _charFlowPlus.AddThemeFontSizeOverride("font_size", 20);
+                _charFlowPlus.Pressed += OnPartyPlus;
+                countRow.AddChild(_charFlowPlus);
+            }
+
+            countRow.Visible = true;
+            UpdateCharFlowUi();
+
             var next = screen.GetNodeOrNull<Godot.Button>("CoopFlowNext");
             if (next == null)
             {
@@ -1864,6 +1929,7 @@ public static partial class CompanionMod
             next.Text = Tr("下一步：选队友（点这里）", "Next: choose teammate (click here)");
             next.Visible = true;
             _charFlowButton = next;
+            UpdateCharFlowUi();
 
             var aiSettings = screen.GetNodeOrNull<Godot.Button>("CoopAiSettings");
             if (aiSettings == null)
@@ -1930,6 +1996,9 @@ public static partial class CompanionMod
             _charFlowButton = null;
             _charFlowHint = null;
             _charFlowAiButton = null;
+            _charFlowMinus = null;
+            _charFlowPlus = null;
+            _charFlowCount = null;
             _charFlowLocal = null;
             _charFlowStep = 0;
         }
@@ -1947,6 +2016,51 @@ public static partial class CompanionMod
         return btn?.Character;
     }
 
+    private static void UpdateCharFlowUi()
+    {
+        _charFlowStep = Math.Clamp(_charFlowStep, 0, _partySize - 1);
+        if (_charFlowHint != null)
+        {
+            _charFlowHint.Text = _charFlowStep == 0
+                ? Tr("第一步：选你自己", "Step 1: choose yourself")
+                : Tr($"第{_charFlowStep + 1}步：选队友 {_charFlowStep}",
+                     $"Step {_charFlowStep + 1}: choose teammate {_charFlowStep}");
+        }
+        if (_charFlowButton != null)
+        {
+            _charFlowButton.Text = _charFlowStep < _partySize - 1
+                ? Tr($"下一步：选队友 {_charFlowStep + 1}",
+                     $"Next: choose teammate {_charFlowStep + 1}")
+                : Tr($"开始 {_partySize} 人（点这里）",
+                     $"Start {_partySize} players (click here)");
+        }
+        if (_charFlowCount != null)
+        {
+            _charFlowCount.Text = Tr(
+                $"队友 {_partySize - 1} 人 / 总人数 {_partySize}",
+                $"{_partySize - 1} teammate(s) / {_partySize} total");
+        }
+        if (_charFlowMinus != null) _charFlowMinus.Visible = _partySize > 2;
+        if (_charFlowPlus != null) _charFlowPlus.Visible = _partySize < 4;
+    }
+
+    private static void OnPartyPlus()
+    {
+        if (_partySize >= 4) return;
+        _partySize++;
+        UpdateCharFlowUi();
+        LogError($"chars: 队友数量 → {_partySize - 1}（总人数 {_partySize}）");
+    }
+
+    private static void OnPartyMinus()
+    {
+        if (_partySize <= 2) return;
+        _partySize--;
+        for (int i = _partySize; i < 4; i++) _flowChars[i] = null;
+        UpdateCharFlowUi();
+        LogError($"chars: 队友数量 → {_partySize - 1}（总人数 {_partySize}）");
+    }
+
     private static void OnCharFlowNext()
     {
         var selected = ReadCharacterScreenSelection();
@@ -1960,33 +2074,38 @@ public static partial class CompanionMod
             return;
         }
 
-        if (_charFlowStep == 0)
+        _flowChars[_charFlowStep] = selected;
+        LogError($"chars: 第{_charFlowStep + 1}步 角色{_charFlowStep}="
+                 + $"{Safe(() => selected.Id.Entry, "?")}");
+
+        if (_charFlowStep < _partySize - 1)
         {
-            _charFlowLocal = selected;
-            _charFlowStep = 1;
-            if (_charFlowHint != null)
-            {
-                _charFlowHint.Text = Tr("第二步：选 AI 队友（可以选同一个）",
-                                        "Step 2: choose the AI teammate (same is allowed)");
-            }
-            if (_charFlowButton != null)
-            {
-                _charFlowButton.Text = Tr("开始双人（点这里）", "Start co-op (click here)");
-            }
-            LogError($"chars: 第一步 我={Safe(() => selected.Id.Entry, "?")}");
+            _charFlowStep++;
+            UpdateCharFlowUi();
             return;
         }
 
-        var local = _charFlowLocal;
-        if (local == null)
+        var party = new List<CharacterModel>();
+        for (int i = 0; i < _partySize; i++)
         {
-            _charFlowActive = false;
-            return;
+            CharacterModel? c = _flowChars[i];
+            if (c == null)
+            {
+                _charFlowStep = i;
+                UpdateCharFlowUi();
+                if (_charFlowHint != null)
+                {
+                    _charFlowHint.Text = Tr($"还差角色 {i}，请先选一个",
+                                            $"Character {i} is still missing; pick one");
+                }
+                return;
+            }
+            party.Add(c);
         }
 
-        LogError($"chars: 第二步 AI={Safe(() => selected.Id.Entry, "?")}");
+        _charFlowLocal = party[0];
         CloseCoopCharacterFlow();
-        _ = StartCoopRun(local, selected);
+        _ = StartCoopRun(null, null, party);
     }
 
     private static void CloseCoopCharacterFlow()
@@ -1996,6 +2115,9 @@ public static partial class CompanionMod
         _charFlowButton = null;
         _charFlowHint = null;
         _charFlowAiButton = null;
+        _charFlowMinus = null;
+        _charFlowPlus = null;
+        _charFlowCount = null;
         _charFlowLocal = null;
         _charFlowStep = 0;
 
@@ -2033,7 +2155,7 @@ public static partial class CompanionMod
                 {
                     netId = p.NetId,
                     character = p.Character.Id.Entry,
-                    isAi = p.NetId == 2uL,
+                    isAi = p.NetId != 1uL,
                 }).ToList(),
             }, JsonOpts);
             string tmp = Path.Combine(dir, "coop_run.tmp");
@@ -2085,7 +2207,6 @@ public static partial class CompanionMod
                 if (_aiMode && Safe(() => !RunManager.Instance.IsInProgress, true))
                 {
                     _aiMode = false;
-                    _aiLastTurn = -1;
                 }
                 return;
             }
@@ -2310,7 +2431,9 @@ public static partial class CompanionMod
         await StartCoopRun(null, null);
     }
 
-    private static async Task StartCoopRun(CharacterModel? chosenLocal, CharacterModel? chosenAi)
+    private static async Task StartCoopRun(
+        CharacterModel? chosenLocal, CharacterModel? chosenAi,
+        IReadOnlyList<CharacterModel>? chosenParty = null)
     {
         if (_starting)
         {
@@ -2326,43 +2449,52 @@ public static partial class CompanionMod
 
         _starting = true;
         _aiMode = true;
-        _aiLastTurn = -1;
         _aiLastDiagMs = 0;
         try
         {
             LogError("coop step 1: 创建玩家/Acts");
 
-            // 主菜单两段式选人优先；没有传入时才回退到隐藏下拉框/默认角色。
-            if (chosenLocal == null && chosenAi == null)
+            // 选人界面传入的完整队伍优先；没有传入时才回退到旧的两下拉框/默认角色。
+            if (chosenParty == null && chosenLocal == null && chosenAi == null)
             {
                 RefreshCharacterOptions();
             }
-            CharacterModel localChar = chosenLocal
-                                       ?? SelectedCharacter(_charLocalOption)
-                                       ?? ModelDb.Character<Ironclad>();
-            CharacterModel aiChar = chosenAi
-                                    ?? SelectedCharacter(_charAiOption)
-                                    ?? ModelDb.Character<Silent>();
-            LogError($"coop: 角色 我={Safe(() => localChar.Id.Entry, "?")} "
-                     + $"AI={Safe(() => aiChar.Id.Entry, "?")}");
 
-            UnlockState unlockMe = SaveManager.Instance.GenerateUnlockStateFromProgress();
-            UnlockState unlockAi = SaveManager.Instance.GenerateUnlockStateFromProgress();
-
-            Player me;
-            try { me = Player.CreateForNewRun(localChar, unlockMe, 1uL); }
-            catch (Exception ex)
+            var partyChars = new List<CharacterModel>();
+            if (chosenParty != null && chosenParty.Count >= 2)
             {
-                LogError($"coop: 角色 {Safe(() => localChar.Id.Entry, "?")} 创建失败，回退 Ironclad: {ex.Message}");
-                me = Player.CreateForNewRun(ModelDb.Character<Ironclad>(), unlockMe, 1uL);
+                partyChars.AddRange(chosenParty.Take(4));
+            }
+            else
+            {
+                partyChars.Add(chosenLocal
+                               ?? SelectedCharacter(_charLocalOption)
+                               ?? ModelDb.Character<Ironclad>());
+                partyChars.Add(chosenAi
+                               ?? SelectedCharacter(_charAiOption)
+                               ?? ModelDb.Character<Silent>());
             }
 
-            Player ai;
-            try { ai = Player.CreateForNewRun(aiChar, unlockAi, 2uL); }
-            catch (Exception ex)
+            UnlockState unlockMe = SaveManager.Instance.GenerateUnlockStateFromProgress();
+            var players = new List<Player>();
+            for (int i = 0; i < partyChars.Count; i++)
             {
-                LogError($"coop: 角色 {Safe(() => aiChar.Id.Entry, "?")} 创建失败，回退 Silent: {ex.Message}");
-                ai = Player.CreateForNewRun(ModelDb.Character<Silent>(), unlockAi, 2uL);
+                ulong netId = (ulong)(i + 1);
+                CharacterModel wanted = partyChars[i];
+                UnlockState unlock = SaveManager.Instance.GenerateUnlockStateFromProgress();
+                try
+                {
+                    players.Add(Player.CreateForNewRun(wanted, unlock, netId));
+                }
+                catch (Exception ex)
+                {
+                    CharacterModel fallback = i == 0
+                        ? ModelDb.Character<Ironclad>()
+                        : ModelDb.Character<Silent>();
+                    LogError($"coop: 角色 {Safe(() => wanted.Id.Entry, "?")} 创建失败，"
+                             + $"回退 {Safe(() => fallback.Id.Entry, "?")}: {ex.Message}");
+                    players.Add(Player.CreateForNewRun(fallback, unlock, netId));
+                }
             }
 
             string seed = SeedHelper.GetRandomSeed();
@@ -2370,9 +2502,12 @@ public static partial class CompanionMod
             List<ActModel> acts = ActModel.GetRandomList(rng, unlockMe, true)
                                           .Select(a => a.ToMutable()).ToList();
 
+            LogError($"coop: 队伍 {players.Count} 人 "
+                     + string.Join(" ", players.Select(p => $"net{p.NetId}={Safe(() => p.Character.Id.Entry, "?")}")));
+
             LogError($"coop step 2: CreateForNewRun {acts.Count} acts");
             RunState runState = RunState.CreateForNewRun(
-                new List<Player> { me, ai }, acts, Array.Empty<ModifierModel>(),
+                players, acts, Array.Empty<ModifierModel>(),
                 GameMode.Standard, 0, seed);
 
             // 关键：跳过 Neow 遗物选择（双人投票会把 AI 卡死）

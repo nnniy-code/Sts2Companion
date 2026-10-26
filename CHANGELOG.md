@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0] - 2026-10-26
+
+### Added
+
+- 2–4 player party (default 3), with `＋` / `－` controls in character select
+- Per-teammate character selection: self → teammate 1 → teammate 2 → teammate 3
+- AI action order follows netId: 2 → 3 → 4
+- Rewards, rest sites, treasure, events, and combat process AIs sequentially
+
+### Notes
+
+- 3-player mode is the tested configuration; 4-player mode is experimental.
+- Extra-AI event choices may still fail in 4-player runs.
+
 ## [0.3.0] - 2026-10-26
 
 ### Added

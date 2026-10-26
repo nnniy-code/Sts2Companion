@@ -37,50 +37,54 @@ public static partial class CompanionMod
 {
     // ---------- 通用 ----------
 
-    private static Player? CoopAiPlayer(RunState runState)
+    /// <summary>所有 AI 队友，按 netId 升序（1 是本地玩家）。</summary>
+    private static List<Player> CoopAiPlayers(RunState runState)
     {
-        // 这套双人档的约定：AI 固定 netId=2
-        foreach (var p in runState.Players)
-        {
-            if (p != null && p.NetId == 2uL) return p;
-        }
-        return null;
+        return runState.Players
+            .Where(p => p != null && p.NetId != 1uL)
+            .OrderBy(p => p.NetId)
+            .ToList();
     }
+
+    private static Player? CoopAiPlayer(RunState runState)
+        => CoopAiPlayers(runState).FirstOrDefault();
 
     private static Player? CoopLocalPlayer(RunState runState)
     {
-        Player? fallback = null;
         foreach (var p in runState.Players)
         {
-            if (p == null) continue;
-            if (p.NetId != 2uL) return p;
-            fallback ??= p;
+            if (p != null && p.NetId == 1uL) return p;
         }
-        return fallback;
+        return runState.Players.FirstOrDefault(p => p != null);
     }
 
-    /// <summary>战斗中按 netId 找 AI 玩家（不要用数组下标，顺序不保证）。</summary>
-    private static Player? CoopAiPlayerInCombat(CombatState cs)
+    /// <summary>战斗中的 AI 队友，按 netId 升序。</summary>
+    private static List<Player> CoopAiPlayersInCombat(CombatState cs)
     {
         try
         {
-            foreach (var p in cs.Players)
-            {
-                if (p != null && p.NetId == 2uL) return p;
-            }
+            return cs.Players
+                .Where(p => p != null && p.NetId != 1uL)
+                .OrderBy(p => p.NetId)
+                .ToList();
         }
-        catch { }
-        return null;
+        catch
+        {
+            return new List<Player>();
+        }
     }
+
+    private static Player? CoopAiPlayerInCombat(CombatState cs)
+        => CoopAiPlayersInCombat(cs).FirstOrDefault();
 
     // ---------- 问题1：事件房间 ----------
 
     private static int _evRoomHash = int.MinValue;
-    private static string _evPrevSig = "";
+    private static readonly Dictionary<ulong, string> _evAiSig = new();
+    private static readonly Dictionary<ulong, bool> _evAiPicked = new();
+    private static readonly Dictionary<ulong, int> _evAiAttempts = new();
     private static long _evLastTryMs;
     private static bool _evAdvanced;
-    private static bool _evAiPickedPage;
-    private static int _evPageAttempts;
     private static int _evRoomChoices;
     private static int _evProceedRetries;
     private static long _evAdvancedMs;
@@ -120,11 +124,12 @@ public static partial class CompanionMod
         if (hash != _evRoomHash)
         {
             _evRoomHash = hash;
-            _evPrevSig = "";
+            _evAiSig.Clear();
+            _evAiPicked.Clear();
+            _evAiAttempts.Clear();
             _evLastTryMs = 0;
             _evAdvanced = false;
             _evRoomChoices = 0;
-            _evPageAttempts = 0;
             _evProceedRetries = 0;
             _evZombieLogged = false;
             LogError($"coop-event: 进入事件 shared={Safe(() => sync.IsShared, false)} "
@@ -132,77 +137,102 @@ public static partial class CompanionMod
         }
 
         var local = CoopLocalPlayer(runState);
-        var ai = CoopAiPlayer(runState);
-        if (local == null || ai == null) return;
+        var ais = CoopAiPlayers(runState);
+        if (local == null || ais.Count == 0) return;
 
         // GetEventForPlayer 在事件刚创建、_events 还没填满时会抛 ArgumentOutOfRangeException，
         // 一旦抛出去会把整个 PollCoopAI 打断（地图/战斗逻辑一起跳过），所以这里包住。
         var localEvent = CoopEventFor(sync, local) ?? CoopLocalEvent(sync);
         if (localEvent == null) return;
-        var aiEvent = CoopEventFor(sync, ai);
 
-        // ---- 每页独立决策 ----
-        // 重要：ChooseOptionForEvent 不写 _playerVotes（只有共享事件的 PlayerVotedForSharedOptionIndex 才写），
-        // 所以独立事件里 GetPlayerVote 永远是 null，"本地已选/AI 已选"都不能靠它判断。
-        // 改用「AI 自己那份事件的页指纹」：页一变就允许再选一次，保证多环节事件能一页页走完。
-        string aiSig = aiEvent != null ? CoopEventSignature(aiEvent) : "";
-        if (aiSig != _evPrevSig)
+        var aiEvents = new Dictionary<ulong, EventModel?>();
+        bool allAiDone = true;
+        foreach (var ai in ais)
         {
-            _evPrevSig = aiSig;
-            _evAiPickedPage = false;
-            _evPageAttempts = 0;
+            var ev = CoopEventFor(sync, ai);
+            aiEvents[ai.NetId] = ev;
+            if (ev == null) allAiDone = false;
+            else if (!ev.IsFinished) allAiDone = false;
+
+            if (ev != null)
+            {
+                // 每个 AI 自己那份事件的页指纹；翻页后允许再选一次。
+                string sig = CoopEventSignature(ev);
+                string oldSig = _evAiSig.GetValueOrDefault(ai.NetId, "");
+                if (sig != oldSig)
+                {
+                    _evAiSig[ai.NetId] = sig;
+                    _evAiPicked[ai.NetId] = false;
+                    _evAiAttempts[ai.NetId] = 0;
+                }
+            }
         }
 
         bool localDone = localEvent.IsFinished;
-        bool aiDone = aiEvent?.IsFinished ?? localDone;
 
         // ★ 僵尸事件闸门：本地事件已结束、当前页没有任何选项，但 AI 那份还没结束。
-        // 这种情况再调 ChooseOptionForEvent 只会把选项效果重放一遍
-        // （浴场事件无限加最大生命值就是这条路径）。
+        // 这种情况再调 ChooseOptionForEvent 只会把选项效果重放一遍。
         if (localDone && localEvent.CurrentOptions.Count == 0)
         {
-            if (aiEvent != null && !aiEvent.IsFinished && !_evZombieLogged)
+            if (allAiDone)
+            {
+                if (!_evAdvanced) CoopProceed(localEvent, null);
+                return;
+            }
+
+            if (!_evZombieLogged)
             {
                 _evZombieLogged = true;
-                LogError("coop-event: 本地事件已结束但 AI 的未结束 —— 判定为僵尸事件，停止跟选");
+                LogError("coop-event: 本地事件已结束，继续让剩余 AI 选完");
             }
-            return;
+            // 不 return：下面继续处理还没完成的 AI 事件。
         }
 
-        // 共享事件是投票制：不能走 ChooseOptionForEvent，否则会读到另一份事件/空选项，
-        // 表现就是“我选了他不选”+ IndexOutOfRange。这里让 AI 投同一票并手动结算。
+        // 共享事件是投票制：每个 AI 都投本地玩家这一票。
         if (Safe(() => sync.IsShared, false))
         {
-            CoopSharedEventVote(sync, local, ai, aiEvent);
-        }
-        else if (aiEvent != null && !aiEvent.IsFinished && !_evAiPickedPage
-            && _evPageAttempts < 8 && _evRoomChoices < 6)
-        {
-            long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            if (nowMs - _evLastTryMs >= 400)   // 限流：选择没生效时不要每帧刷
+            foreach (var ai in ais)
             {
+                CoopSharedEventVote(sync, local, ai, aiEvents.GetValueOrDefault(ai.NetId));
+            }
+        }
+        else
+        {
+            // 按 netId 顺序，每次只让一个 AI 选，避免动作队列抢进程：2 → 3 → 4。
+            long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (nowMs - _evLastTryMs < 400) return;
+
+            foreach (var ai in ais)
+            {
+                var aiEvent = aiEvents.GetValueOrDefault(ai.NetId);
+                if (aiEvent == null || aiEvent.IsFinished) continue;
+                if (_evAiPicked.GetValueOrDefault(ai.NetId, false)) continue;
+                int attempts = _evAiAttempts.GetValueOrDefault(ai.NetId, 0);
+                if (attempts >= 8 || _evRoomChoices >= 6 * ais.Count) continue;
+
                 _evLastTryMs = nowMs;
-                _evPageAttempts++;
+                _evAiAttempts[ai.NetId] = attempts + 1;
                 if (CoopChooseForAi(sync, local, ai, aiEvent, localEvent))
                 {
-                    _evAiPickedPage = true;
+                    _evAiPicked[ai.NetId] = true;
                     _evRoomChoices++;
-                    if (_evRoomChoices >= 6)
+                    if (_evRoomChoices >= 6 * ais.Count)
                     {
-                        LogError("coop-event: 本事件已跟选 6 次，停止（防止选项效果被重复触发）");
+                        LogError($"coop-event: 本事件已跟选 {_evRoomChoices} 次，停止");
                     }
                 }
-                else if (_evPageAttempts >= 8)
+                else if (attempts + 1 >= 8)
                 {
-                    LogError("coop-event: 本页已尝试 8 次仍失败，停止重试（等翻页或人工处理）");
+                    LogError($"coop-event: AI{ai.NetId} 本页已尝试 8 次仍失败");
                 }
+                break;   // 一次只处理一个 AI
             }
         }
 
-        // 两人的事件都结束 → 推进；推进 8 秒没生效就重试（最多 3 次），避免 Proceed 静默失败后卡死
-        if (!_evAdvanced && localDone && (aiDone || aiEvent == null))
+        // 所有人的事件都结束 → 推进；推进 8 秒没生效就重试（最多 3 次）。
+        if (!_evAdvanced && localDone && allAiDone)
         {
-            CoopProceed(localEvent, aiEvent);
+            CoopProceed(localEvent, null);
         }
         else if (_evAdvanced && _evProceedRetries < 3
                  && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _evAdvancedMs > 8000)
@@ -441,7 +471,7 @@ public static partial class CompanionMod
                                   + (t.Exception?.InnerException?.Message ?? "?")),
                     System.Threading.Tasks.TaskContinuationOptions.OnlyOnFaulted);
             }
-            LogError("coop-event: 两人都选完 → NEventRoom.Proceed()");
+            LogError("coop-event: 所有 AI 都选完 → NEventRoom.Proceed()");
         }
         catch (Exception ex)
         {
@@ -469,8 +499,8 @@ public static partial class CompanionMod
         if (sync == null) return;
 
         var local = CoopLocalPlayer(runState);
-        var ai = CoopAiPlayer(runState);
-        if (local == null || ai == null) return;
+        var ais = CoopAiPlayers(runState);
+        if (local == null || ais.Count == 0) return;
 
         int hash = room.GetHashCode();
         if (hash != _restRoomHash)
@@ -483,13 +513,17 @@ public static partial class CompanionMod
 
         if (_restChoiceSent) return;
 
-        int? aiChosen = Safe(() => sync.GetChosenOptionIndex(ai.NetId), (int?)null);
-        if (aiChosen.HasValue)
+        // 按 netId 顺序处理第一个还没选的 AI；2 选完再 3。
+        Player? ai = null;
+        foreach (var candidate in ais)
         {
-            _restChoiceSent = true;
-            LogError($"coop-rest: AI 已选过 index={aiChosen.Value}");
-            return;
+            if (!Safe(() => sync.GetChosenOptionIndex(candidate.NetId).HasValue, false))
+            {
+                ai = candidate;
+                break;
+            }
         }
+        if (ai == null) return;
 
         long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         if (nowMs - _restLastTryMs < 400) return;
@@ -579,7 +613,8 @@ public static partial class CompanionMod
 
             object? result = _miRestChoose.Invoke(sync, new object?[] { ai, index });
             _restChoiceSent = true;
-            LogError($"coop-rest: AI 选择 {Safe(() => options[index].OptionId, "?")} (index={index})");
+            LogError($"coop-rest: AI{ai.NetId} 选择 "
+                     + $"{Safe(() => options[index].OptionId, "?")} (index={index})");
 
             if (result is Task task)
             {
@@ -602,11 +637,8 @@ public static partial class CompanionMod
                                 LogError("coop-rest: ChooseOption 完成但没记录选择，允许重试");
                                 failed = true;
                             }
-                            if (failed)
-                            {
-                                _restChoiceSent = false;
-                                _restLastTryMs = 0;
-                            }
+                            _restChoiceSent = false;
+                            if (failed) _restLastTryMs = 0;
                         });
                     },
                     TaskContinuationOptions.ExecuteSynchronously);
@@ -614,11 +646,13 @@ public static partial class CompanionMod
             else
             {
                 try { selectorScope?.Dispose(); } catch { }
+                _restChoiceSent = false;
             }
         }
         catch (Exception ex)
         {
             try { selectorScope?.Dispose(); } catch { }
+            _restChoiceSent = false;
             LogError("coop-rest: 选择崩: " + (ex.InnerException ?? ex).Message);
         }
     }
@@ -670,7 +704,6 @@ public static partial class CompanionMod
     // ---------- 宝箱 / 遗物 ----------
 
     private static int _treasureRoomHash = int.MinValue;
-    private static bool _treasurePicked;
     private static bool _treasurePickingStarted;
     private static long _treasureProceedAtMs;
     private static bool _treasureProceedSent;
@@ -680,14 +713,13 @@ public static partial class CompanionMod
         var sync = RunManager.Instance?.TreasureRoomRelicSynchronizer;
         if (sync == null) return;
 
-        var ai = CoopAiPlayer(runState);
-        if (ai == null) return;
+        var ais = CoopAiPlayers(runState);
+        if (ais.Count == 0) return;
 
         int hash = room.GetHashCode();
         if (hash != _treasureRoomHash)
         {
             _treasureRoomHash = hash;
-            _treasurePicked = false;
             _treasurePickingStarted = false;
             _treasureProceedAtMs = 0;
             _treasureProceedSent = false;
@@ -699,34 +731,42 @@ public static partial class CompanionMod
             _treasurePickingStarted = true;
         }
 
-        // 即使切到 AI 视角，也要在双方选完后自动点"继续"，否则宝箱会停住。
+        // 即使切到 AI 视角，也要在所有人选完后自动点"继续"，否则宝箱会停住。
         CoopTreasureProceedTick(sync);
 
         if (_viewSwitched) return;
-        if (_treasurePicked) return;
-        if (sync.GetPlayerVote(ai) != null) { _treasurePicked = true; return; }
 
         var relics = Safe(() => sync.CurrentRelics, (IReadOnlyList<RelicModel>?)null);
         if (relics == null) return;
         if (relics.Count == 0)
         {
             sync.CompleteWithNoRelics();
-            _treasurePicked = true;
             LogError("coop-treasure: 没有遗物，直接完成");
             return;
         }
+
+        // 按 netId 顺序：2 拿完再 3。
+        Player? ai = null;
+        foreach (var candidate in ais)
+        {
+            if (Safe(() => sync.GetPlayerVote(candidate) == null, true))
+            {
+                ai = candidate;
+                break;
+            }
+        }
+        if (ai == null) return;
 
         try
         {
             // OnPicked 是 public 的按玩家入口；index=0 表示拿第一个。
             sync.OnPicked(ai, 0);
-            _treasurePicked = true;
-            LogError($"coop-treasure: AI 选择遗物 index=0 "
+            LogError($"coop-treasure: AI{ai.NetId} 选择遗物 index=0 "
                      + $"({Safe(() => relics[0].Id.Entry, "?")})");
         }
         catch (Exception ex)
         {
-            LogError("coop-treasure: OnPicked 崩: " + ex.Message);
+            LogError($"coop-treasure: AI{ai.NetId} OnPicked 崩: " + ex.Message);
         }
     }
 
@@ -782,16 +822,19 @@ public static partial class CompanionMod
         try
         {
             var sync = RunManager.Instance?.ActChangeSynchronizer;
-            var ai = CoopAiPlayer(runState);
-            if (sync == null || ai == null) return;
+            var ais = CoopAiPlayers(runState);
+            if (sync == null || ais.Count == 0) return;
 
             int act = runState.CurrentActIndex;
             if (_actReadyIndex == act) return;
             if (!sync.IsWaitingForOtherPlayers()) return;
 
-            sync.OnPlayerReady(ai, act);
+            foreach (var ai in ais)
+            {
+                sync.OnPlayerReady(ai, act);
+                LogError($"coop-act: AI{ai.NetId} 已准备进入下一幕 act={act}");
+            }
             _actReadyIndex = act;
-            LogError($"coop-act: AI 已准备进入下一幕 act={act}");
         }
         catch (Exception ex)
         {
@@ -834,24 +877,28 @@ public static partial class CompanionMod
         if (screen == null || !screen.IsOpen) return;
 
         var local = CoopLocalPlayer(runState);
-        var ai = CoopAiPlayer(runState);
-        if (local == null || ai == null) return;
+        var ais = CoopAiPlayers(runState);
+        if (local == null || ais.Count == 0) return;
 
-        // 休息点里地图界面可能已经能打开；双方没选完之前绝不能自动旅行，
+        // 休息点里地图界面可能已经能打开；所有人没选完之前绝不能自动旅行，
         // 否则会跳过篝火选择、把房间状态留成 null，后面直接进不去。
         if (runState.CurrentRoom is RestSiteRoom && NRestSiteRoom.Instance != null)
         {
             var restSync = RunManager.Instance?.RestSiteSynchronizer;
             int? localChoice = Safe(() => restSync?.GetChosenOptionIndex(local.NetId), (int?)null);
-            int? aiChoice = Safe(() => restSync?.GetChosenOptionIndex(ai.NetId), (int?)null);
-            if (restSync != null && (!localChoice.HasValue || !aiChoice.HasValue))
+            bool allAiChosen = ais.All(a =>
+            {
+                int? choice = Safe(() => restSync?.GetChosenOptionIndex(a.NetId), (int?)null);
+                return choice.HasValue;
+            });
+            if (restSync != null && (!localChoice.HasValue || !allAiChosen))
             {
                 long blockMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 if (blockMs - _mapRestBlockMs > 3000)
                 {
                     _mapRestBlockMs = blockMs;
                     LogError($"coop-map: 休息点未选完，暂停自动旅行 "
-                             + $"local={localChoice?.ToString() ?? "null"} ai={aiChoice?.ToString() ?? "null"}");
+                             + $"local={localChoice?.ToString() ?? "null"} aiAll={allAiChosen}");
                 }
                 return;
             }
@@ -878,15 +925,16 @@ public static partial class CompanionMod
             if (treasureSync != null && Safe(() => treasureSync.CurrentRelics?.Count ?? 0, 0) > 0)
             {
                 bool tLocalVoted = Safe(() => treasureSync.GetPlayerVote(local) != null, false);
-                bool tAiVoted = Safe(() => treasureSync.GetPlayerVote(ai) != null, false);
-                if (!tLocalVoted || !tAiVoted)
+                bool allAiVoted = ais.All(a =>
+                    Safe(() => treasureSync.GetPlayerVote(a) != null, false));
+                if (!tLocalVoted || !allAiVoted)
                 {
                     long blockMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                     if (blockMs - _mapTreasureBlockMs > 3000)
                     {
                         _mapTreasureBlockMs = blockMs;
                         LogError($"coop-map: 宝箱遗物未选完，暂停自动旅行 "
-                                 + $"local={tLocalVoted} ai={tAiVoted}");
+                                 + $"local={tLocalVoted} aiAll={allAiVoted}");
                     }
                     return;
                 }
@@ -901,7 +949,7 @@ public static partial class CompanionMod
             _mapBothLogged = false;
             _mapTravelStarted = false;
             _mapTravelCoord = null;
-            CoopLogMapEntry(runState, sync, screen, local, ai, gen);
+            CoopLogMapEntry(runState, sync, screen, local, ais[0], gen);
         }
 
         if (screen.IsTraveling) return;
@@ -948,7 +996,7 @@ public static partial class CompanionMod
             return;
         }
 
-        bool aiVoted = CoopMapVoteOf(sync, ai) != null;
+        bool aiVoted = CoopMapVoteOf(sync, ais[0]) != null;
         if (aiVoted)
         {
             if (!_mapBothLogged)
@@ -970,14 +1018,14 @@ public static partial class CompanionMod
 
         try
         {
-            sync.PlayerVotedForMapCoord(ai, location, vote);
+            sync.PlayerVotedForMapCoord(ais[0], location, vote);
         }
         catch (Exception ex)
         {
             LogError($"coop-map: 直接投票崩: {ex.Message}");
         }
 
-        if (CoopMapVoteOf(sync, ai) != null)
+        if (CoopMapVoteOf(sync, ais[0]) != null)
         {
             LogError($"coop-map: AI 跟票成功 coord=({coord.col},{coord.row}) gen={gen}");
             return;
@@ -993,7 +1041,7 @@ public static partial class CompanionMod
                 LogError("coop-map: ActionQueueSynchronizer 为 null，无法入队");
                 return;
             }
-            actionQueue.RequestEnqueue(new VoteForMapCoordAction(ai, location, vote));
+            actionQueue.RequestEnqueue(new VoteForMapCoordAction(ais[0], location, vote));
             LogError($"coop-map: 直接投票未生效，改用 VoteForMapCoordAction 入队 coord=({coord.col},{coord.row})");
         }
         catch (Exception ex)

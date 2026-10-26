@@ -79,14 +79,14 @@ public static partial class CompanionMod
     /// <summary>切回本地视角时清掉 AI 的状态缓存，避免用旧回合/旧页面做判断。</summary>
     private static void CoopResetAfterViewSwitch()
     {
-        _aiLastTurn = -1;
         _combatLogged = false;
         _aiDeadLogged = false;
         _aiPlaying = false;
 
         _evRoomHash = int.MinValue;   // 下一次 tick 当作"新事件房间"重新初始化
-        _evAiPickedPage = false;
-        _evPageAttempts = 0;
+        _evAiSig.Clear();
+        _evAiPicked.Clear();
+        _evAiAttempts.Clear();
         _evRoomChoices = 0;
         _evProceedRetries = 0;
         _evZombieLogged = false;

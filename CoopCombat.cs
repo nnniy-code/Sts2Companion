@@ -47,6 +47,7 @@ public static partial class CompanionMod
     private static long _combatIdleMs;
     private static CombatState? _lastCombatState;
     private static bool _aiPlaying;
+    private static readonly Dictionary<ulong, int> _aiLastTurnByNet = new();
     private static readonly HttpClient CoopApiHttp = new() { Timeout = TimeSpan.FromSeconds(12) };
 
 
@@ -78,7 +79,7 @@ public static partial class CompanionMod
         if (!ReferenceEquals(_lastCombatState, cs))
         {
             _lastCombatState = cs;
-            _aiLastTurn = -1;
+            _aiLastTurnByNet.Clear();
             _combatLogged = false;
             _aiDeadLogged = false;
             LogError($"coop-combat: 新战斗（round={Safe(() => cs.RoundNumber, 0)}）→ 重置回合计数");
@@ -86,42 +87,28 @@ public static partial class CompanionMod
 
         if (Safe(() => cs.CurrentSide, CombatSide.None) != CombatSide.Player) return;
 
-        var ai = CoopAiPlayerInCombat(cs);
-        if (ai == null) return;
+        // 只要有一个 AI 还在出牌，就不再选下一个；否则会每帧重复打日志/抢动作队列。
+        if (_aiPlaying) return;
 
-        var pcs = Safe(() => ai.PlayerCombatState, (PlayerCombatState?)null);
-        if (pcs == null) return;
+        var ais = CoopAiPlayersInCombat(cs);
+        if (ais.Count == 0) return;
 
-        // Phase: None=0 Start=1 AutoPrePlay=2 Play=3 AutoPostPlay=4 End=5
-        if (Safe(() => pcs.Phase, PlayerTurnPhase.None) != PlayerTurnPhase.Play)
+        int turn = Safe(() => cs.RoundNumber, 0);
+        var alive = ais
+            .Where(p => Safe(() => p.Creature?.IsAlive ?? true, true))
+            .ToList();
+
+        if (alive.Count == 0)
         {
-            CoopLogCombatIdle(cs, ai, "phase!=Play");
-            return;
-        }
-
-        if (!_combatLogged)
-        {
-            _combatLogged = true;
-            CoopLogCombatEntry(cs, ai);
-        }
-
-        // AI 阵亡后不再参与回合：只记一次现场，方便定位"我的回合被跳过"。
-        if (!Safe(() => ai.Creature?.IsAlive ?? true, true))
-        {
+            // 所有 AI 都阵亡：撤销本地玩家的 ready，避免回合被跳过。
             if (!_aiDeadLogged)
             {
                 _aiDeadLogged = true;
-                var cm2 = CombatManager.Instance;
-                LogError("coop-death: AI 已阵亡 "
+                LogError("coop-death: 所有 AI 已阵亡 "
                          + $"本地phase={Safe(() => CoopLocalPlayerInCombat(cs)?.PlayerCombatState?.Phase.ToString() ?? "null", "?")} "
-                         + $"aiPhase={Safe(() => ai.PlayerCombatState?.Phase.ToString() ?? "null", "?")} "
-                         + $"aiReady={Safe(() => cm2.IsPlayerReadyToEndTurn(ai), false)} "
-                         + $"allReady={Safe(() => cm2.AllPlayersReadyToEndTurn(), false)}");
+                         + $"allReady={Safe(() => CombatManager.Instance.AllPlayersReadyToEndTurn(), false)}");
             }
 
-            // AI 阵亡后，这套单人 net service 会把"全员就绪"判成 true，
-            // 于是回合立刻结算、本地玩家的出牌阶段被跳过。
-            // 在本地玩家仍处于 Play 时撤销它的 ready 标记，把回合还给它。
             var localP = CoopLocalPlayerInCombat(cs);
             if (localP != null
                 && Safe(() => localP.PlayerCombatState?.Phase == PlayerTurnPhase.Play, false)
@@ -145,22 +132,41 @@ public static partial class CompanionMod
             return;
         }
 
-        int turn = Safe(() => cs.RoundNumber, 0);
-        if (turn <= _aiLastTurn) return;
-
-        LogError($"coop: AI 回合 turn={turn} 手牌={Safe(() => pcs.Hand.Cards.Count, 0)} "
-                 + $"能量={Safe(() => pcs.Energy, 0)} 敌方意图伤害={CoopIncomingDamage(cs)}");
-
-        // 防重入：PlayAiCardsAsync 是 fire-and-forget 的，如果被并发触发会重复出牌
-        if (_aiPlaying)
+        // 严格按 netId 顺序找一个真正能出牌的 AI：2 → 3 → 4。
+        // 同一时刻只允许一个 AI 出牌，避免动作队列抢进程。
+        Player? ai = null;
+        PlayerCombatState? pcs = null;
+        foreach (var candidate in alive)
         {
-            LogError("coop: AI 回合已经开始，跳过重复触发");
+            var candidatePcs = Safe(() => candidate.PlayerCombatState, (PlayerCombatState?)null);
+            if (candidatePcs == null) continue;
+            if (Safe(() => candidatePcs.Phase, PlayerTurnPhase.None) != PlayerTurnPhase.Play) continue;
+            if (Safe(() => CombatManager.Instance.IsPlayerReadyToEndTurn(candidate), false)) continue;
+            if (turn <= _aiLastTurnByNet.GetValueOrDefault(candidate.NetId, -1)) continue;
+            ai = candidate;
+            pcs = candidatePcs;
+            break;
+        }
+
+        if (ai == null || pcs == null)
+        {
+            CoopLogCombatIdle(cs, alive[0], "没有可行动的 AI");
             return;
         }
 
+        if (!_combatLogged)
+        {
+            _combatLogged = true;
+            CoopLogCombatEntry(cs, ai);
+        }
+
+        LogError($"coop: AI{ai.NetId} 回合 turn={turn} "
+                 + $"手牌={Safe(() => pcs.Hand.Cards.Count, 0)} "
+                 + $"能量={Safe(() => pcs.Energy, 0)} 敌方意图伤害={CoopIncomingDamage(cs)}");
+
         // 只有真正拿到执行权才记 turn。旧顺序在 _aiPlaying=true 时先把 turn 记掉，
         // 如果上一回合的异步出牌还没结束，这一回合就会被永久跳过。
-        _aiLastTurn = turn;
+        _aiLastTurnByNet[ai.NetId] = turn;
         _aiPlaying = true;
         _ = PlayAiCardsAsync(ai, cs);
     }
@@ -815,7 +821,7 @@ public static partial class CompanionMod
             {
                 foreach (var p in cs.Players)
                 {
-                    if (p != null && p.NetId != 2uL && p.Creature != null) return p.Creature;
+                    if (p != null && p.NetId == 1uL && p.Creature != null) return p.Creature;
                 }
                 return card.Owner?.Creature;
             }
@@ -842,9 +848,29 @@ public static partial class CompanionMod
             string netType = Safe(() => RunManager.Instance.NetService?.Type.ToString() ?? "?", "?");
             bool realMultiplayer = netType is not ("Singleplayer" or "None" or "?");
 
+            if (!realMultiplayer && _partySize <= 2)
+            {
+                LogError($"coop: 单人档(net={netType}) 双人模式不替 AI 结束回合 —— 等本地玩家自己按结束回合");
+                return;
+            }
+
             if (!realMultiplayer)
             {
-                LogError($"coop: 单人档(net={netType}) 不替 AI 结束回合 —— 等本地玩家自己按结束回合");
+                // 3/4 人档：必须让第 2 个 AI 结束自己的回合，游戏才会把出牌权交给第 3/4 个 AI。
+                // 本地玩家不标记 ready，所以不会把本地回合一起结束。
+                var cmSingle = CombatManager.Instance;
+                if (!Safe(() => cmSingle.IsPlayerReadyToEndTurn(ai), false))
+                {
+                    try
+                    {
+                        cmSingle.SetReadyToEndTurn(ai, false, null);
+                        LogError($"coop: AI{ai.NetId} 已结束回合（多人档顺序推进）");
+                    }
+                    catch (Exception ex)
+                    {
+                        LogError($"coop: AI{ai.NetId} SetReadyToEndTurn 失败: {ex.Message}");
+                    }
+                }
                 return;
             }
 
@@ -878,7 +904,7 @@ public static partial class CompanionMod
         {
             foreach (var p in cs.Players)
             {
-                if (p != null && p.NetId != 2uL) return p;
+                if (p != null && p.NetId == 1uL) return p;
             }
         }
         catch { }
@@ -1228,7 +1254,7 @@ public static partial class CompanionMod
             }
 
             var local = CoopLocalPlayer(runState);
-            var ai = CoopAiPlayer(runState);
+            var ais = CoopAiPlayers(runState);
             // GetNextRewardIds 可能对本地/AI 各报一次同一个 set id（日志里出现过 ids=[0,0]）。
             // 去重后再枚举，避免同一 set 被重复处理、日志也重复。
             var ids = (Safe(() => rss.GetNextRewardIds()?.ToList(), (List<int>?)null) ?? new List<int>())
@@ -1242,12 +1268,22 @@ public static partial class CompanionMod
                 foreach (var id in ids)
                 {
                     bool localDone = local != null && Safe(() => rss.IsRewardsSetCompleted(local, id), false);
-                    bool aiDone = ai != null && Safe(() => rss.IsRewardsSetCompleted(ai, id), false);
-                    LogError($"coop-reward:   set={id} 本地完成={localDone} AI完成={aiDone}");
+                    string aiDone = string.Join(" ", ais.Select(a =>
+                        $"AI{a.NetId}={Safe(() => rss.IsRewardsSetCompleted(a, id), false)}"));
+                    LogError($"coop-reward:   set={id} 本地完成={localDone} {aiDone}");
                 }
             }
 
-            if (ai == null || ids.Count == 0) return;
+            if (ids.Count == 0 || ais.Count == 0) return;
+
+            // 严格按 netId 顺序：先处理还没领完的最高优先级 AI（2 → 3 → 4）。
+            // CoopClaimAiRewardsAsync 内部有 busy 锁，所以在上一只领完之前不会并行。
+            var ai = ais.FirstOrDefault(a => CoopAiRewardSet(rss, a) != null);
+            if (ai == null)
+            {
+                _aiRewardNoSetMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                return;
+            }
 
             // AI 没有奖励集时 SelectRewardForPlayer 会抛 not currently viewing；
             // 退避 2 秒，避免每 500ms 白试一次。

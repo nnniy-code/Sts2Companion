@@ -1,15 +1,16 @@
 # STS2 AI 队友 Mod — 交接文档
 
-> 2026-10-26 · `Sts2Companion` 0.3.0 · StS2 `v0.111.0`（Godot 4.5 + C# / .NET 9）
+> 2026-10-26 · `Sts2Companion` 0.4.0 · StS2 `v0.111.0`（Godot 4.5 + C# / .NET 9）
 
 ## 0. 一句话现状
 
-单进程双人档（本地 netId=1 + 模拟 AI netId=2）已跑通：
+单进程 2–4 人档（本地 netId=1 + AI netId=2/3/4，默认 3 人）已跑通：
 **事件 → 地图 → 战斗出牌 → 选牌/弃牌 → AI 领奖**。
 商店 15 秒自动离开；宝箱/章节转场已处理，Boss 遗物/底层选择仍有风险。
+AI 动作按 netId 顺序 2 → 3 → 4。
 卡住时按 **F10 切视角**人工接管。
 
-2026-10-26 做了一轮性能/正确性优化（§8），构建 0 警告；**尚未实机跑过**，先看 §8 清单。
+3 人已实机创建并进入战斗；4 人可创建，事件里的额外 AI 选择仍可能失败（实验性）。
 
 ## 1. 路径：先分清源码和运行态
 
@@ -85,7 +86,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy.ps1 -DryRun
 | 动作解堵 | 出牌 2.5 秒没离手 → `ActionExecutor.Cancel()` | `已取消卡住的动作` |
 | 卡死看门狗 | 进度指纹 15 秒不变（1Hz 采样） | `coop-watch:` |
 | 切视角 | F10 | `view:` |
-| 角色选择 | 主菜单「和 AI 玩」→ 原版选人界面两段式（先我，再 AI，含 mod） | `chars: ...` |
+| 角色选择 | 主菜单「和 AI 玩」→ 原版选人界面逐步选：我 → 队友1 → 队友2/3（2–4 人，含 mod） | `chars: ...` |
 | 休息点 | AI 选治疗/锻造/首个可用项；地图旅行等双方选完才放行 | `coop-rest:` |
 | 宝箱遗物 | AI `OnPicked(ai,0)`；双方选完自动点继续 | `coop-treasure:` |
 | 章节转场 | AI `OnPlayerReady(ai,act)` | `coop-act:` |

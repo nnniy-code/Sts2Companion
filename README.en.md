@@ -1,28 +1,30 @@
 # STS2 Companion
 
-![version](https://img.shields.io/badge/version-0.3.0-blue)
+![version](https://img.shields.io/badge/version-0.4.0-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![game](https://img.shields.io/badge/Slay%20the%20Spire%202-v0.111.0-orange)
 
 [中文说明](README.md) | English
 
-A **local AI teammate** mod for *Slay the Spire 2*.
+A **local AI teammates** mod for *Slay the Spire 2*.
 
-No networking, no second human player, no external AI service. The game creates a second character controlled by the AI, and that character travels, fights, picks events, and collects rewards with you.
+No networking, no second human player, no external AI service. The game creates AI-controlled teammates that travel, fight, pick events, and collect rewards with you.
 
-> This is **v0.3.0, a playable test build**, not a 1.0 release.  
+> This is **v0.4.0, experimental**. 3-player runs have been launched into combat; 4-player mode is still experimental.  
 > See [Known Issues](#known-issues) before playing.
 
 ---
 
 ## What This Mod Does
 
-The mod creates a two-character run:
+The mod creates a 2–4 character run:
 
 - **Player 1**: you
-- **Player 2**: a local AI teammate
+- **Player 2–4**: local AI teammates
 
-The AI teammate automatically handles:
+Default is **3 players** (you + 2 AI); use `＋` / `－` in character select for 2–4.
+
+AI teammates act **in netId order** (2 → 3 → 4) and handle:
 
 - Combat cards, targets, and multi-hit attacks
 - Post-combat gold, potions, and card rewards
@@ -33,13 +35,25 @@ The AI teammate automatically handles:
 - Card selection, discard, and scry prompts
 - Act-transition readiness
 
-The main menu gets a **`和 AI 玩`** (*Play with AI*) entry. The flow mirrors the vanilla single-player character select:
+The main menu gets a **`和 AI 玩`** (*Play with AI*) entry:
 
 1. Pick your character.
-2. Pick the AI teammate's character.
-3. Start the run.
+2. Pick teammate 1.
+3. Pick teammate 2 (3-player run).
+4. Pick teammate 3 (4-player run).
+5. Start.
 
-The character list comes from the vanilla character-select screen, so **base-game characters and registered mod characters both appear**.
+Bottom controls:
+
+```text
+－   2 teammate(s) / 3 total   ＋
+```
+
+- 2 players: only `＋`
+- 3 players: both
+- 4 players: only `－`
+
+**Each teammate can use a different character.** The list comes from the vanilla character-select screen, so **base-game characters and registered mod characters both appear**.
 
 > The in-game UI is currently Chinese. The two confirmation buttons are:
 >
@@ -223,7 +237,13 @@ If there is no D: drive, the mod falls back to:
 
 ## Known Issues
 
-This is **v0.3.0, a test build**.
+This is **v0.4.0, experimental**.
+
+### 0. 3/4-player mode
+
+- **3 players**: character selection, run creation, and combat have been tested.
+- **4 players**: creation and combat work, but some extra-AI event choices may still fail. Treat it as experimental.
+- Test 3 players first; send logs if a 4-player run stalls.
 
 ### 1. Shops
 
@@ -322,7 +342,7 @@ https://github.com/nnniy-code/Sts2Companion/releases/latest
 Release asset:
 
 ```text
-Sts2Companion-0.3.0.zip
+Sts2Companion-0.4.0.zip
 ├── Sts2Companion.dll
 └── Sts2Companion.json
 ```
