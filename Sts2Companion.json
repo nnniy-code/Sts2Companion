@@ -1,8 +1,8 @@
 {
   "id": "Sts2Companion",
-  "name": "STS2 Companion Bridge",
-  "author": "local",
-  "description": "Local co-op companion: automated AI teammate for events/map/combat, plus live state export.",
+  "name": "STS2 Companion",
+  "author": "nnniy-code",
+  "description": "Local co-op with an automated AI teammate: events, map, combat, rest sites, treasure. Single-player simulation, no network required.",
   "version": "0.2.0",
   "has_pck": false,
   "has_dll": true,
