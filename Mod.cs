@@ -88,6 +88,19 @@ public static partial class CompanionMod
     private static string _charCfgPath = "";
     private static long _lastCharRefreshMs;
 
+    // AI 来源：本地规则 / OpenAI 兼容 API（当前 API 只接管战斗出牌）
+    private static bool _useApiBrain;
+    private static string _apiBaseUrl = "https://api.openai.com/v1";
+    private static string _apiKey = "";
+    private static string _apiModel = "gpt-4o-mini";
+    private static string _aiCfgPath = "";
+    private static Godot.OptionButton? _aiModeOption;
+    private static Godot.VBoxContainer? _apiBox;
+    private static Godot.LineEdit? _apiBaseEdit;
+    private static Godot.LineEdit? _apiKeyEdit;
+    private static Godot.LineEdit? _apiModelEdit;
+    private static bool _loadingAiCfg;
+
     // 主菜单「单人 + AI」入口 + 两段式选人
     private static Godot.Control? _coopMenuButton;
     private static long _menuEntryLastMs;
@@ -149,6 +162,8 @@ public static partial class CompanionMod
 
         _advicePath = Path.Combine(Path.GetDirectoryName(_outFile)!, "advice.json");
         _charCfgPath = Path.Combine(Path.GetDirectoryName(_outFile)!, "companion_chars.json");
+        _aiCfgPath = Path.Combine(Path.GetDirectoryName(_outFile)!, "companion_ai.json");
+        LoadAiConfig();
         StartBackend();
         BuildUi();
 
@@ -611,7 +626,7 @@ public static partial class CompanionMod
             panel.OffsetLeft = -400f;
             panel.OffsetRight = -16f;
             panel.OffsetTop = 110f;
-            panel.OffsetBottom = 410f;
+            panel.OffsetBottom = 610f;
 
             var vbox = new Godot.VBoxContainer
             {
@@ -657,11 +672,95 @@ public static partial class CompanionMod
             _input.AddThemeFontSizeOverride("font_size", 13);
             _input.TextSubmitted += OnChatSubmit;
 
+            var aiRow = new Godot.HBoxContainer
+            {
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+            };
+            aiRow.AddThemeConstantOverride("separation", 6);
+
+            var aiLabel = new Godot.Label
+            {
+                Text = "AI 来源",
+                CustomMinimumSize = new Godot.Vector2(58, 0),
+                VerticalAlignment = Godot.VerticalAlignment.Center,
+                MouseFilter = Godot.Control.MouseFilterEnum.Ignore,
+            };
+            aiLabel.AddThemeFontSizeOverride("font_size", 12);
+            aiLabel.AddThemeColorOverride("font_color", new Godot.Color(0.85f, 0.82f, 0.70f));
+
+            _aiModeOption = new Godot.OptionButton
+            {
+                CustomMinimumSize = new Godot.Vector2(180, 30),
+                SizeFlagsHorizontal = Godot.Control.SizeFlags.ExpandFill,
+                TooltipText = "本地规则不联网；API 模式目前只接管战斗出牌，其它流程仍用本地规则",
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+            };
+            _aiModeOption.AddItem("本地规则", 0);
+            _aiModeOption.AddItem("API（战斗）", 1);
+            _aiModeOption.AddThemeFontSizeOverride("font_size", 12);
+            _aiModeOption.ItemSelected += _ =>
+            {
+                if (_loadingAiCfg) return;
+                _useApiBrain = _aiModeOption.Selected == 1;
+                ReadApiFieldsFromUi();
+                UpdateApiBoxVisibility();
+                SaveAiConfig();
+            };
+            aiRow.AddChild(aiLabel);
+            aiRow.AddChild(_aiModeOption);
+
+            _apiBox = new Godot.VBoxContainer
+            {
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+                Visible = false,
+            };
+            _apiBox.AddThemeConstantOverride("separation", 4);
+
+            _apiBaseEdit = new Godot.LineEdit
+            {
+                PlaceholderText = "Base URL，例如 https://api.openai.com/v1",
+                CustomMinimumSize = new Godot.Vector2(0, 30),
+            };
+            _apiKeyEdit = new Godot.LineEdit
+            {
+                PlaceholderText = "API Key（只保存在本机 state 目录）",
+                Secret = true,
+                CustomMinimumSize = new Godot.Vector2(0, 30),
+            };
+            _apiModelEdit = new Godot.LineEdit
+            {
+                PlaceholderText = "模型，例如 gpt-4o-mini / deepseek-chat",
+                CustomMinimumSize = new Godot.Vector2(0, 30),
+            };
+            foreach (var edit in new[] { _apiBaseEdit, _apiKeyEdit, _apiModelEdit })
+            {
+                edit.AddThemeFontSizeOverride("font_size", 12);
+                _apiBox.AddChild(edit);
+            }
+
+            var apiSave = new Godot.Button
+            {
+                Text = "保存 API 设置",
+                CustomMinimumSize = new Godot.Vector2(0, 30),
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+            };
+            apiSave.AddThemeFontSizeOverride("font_size", 12);
+            apiSave.Pressed += () =>
+            {
+                ReadApiFieldsFromUi();
+                SaveAiConfig();
+            };
+            _apiBox.AddChild(apiSave);
+
             vbox.AddChild(_head);
             vbox.AddChild(_state);
+            vbox.AddChild(aiRow);
+            vbox.AddChild(_apiBox);
             vbox.AddChild(_body);
             vbox.AddChild(_input);
             panel.AddChild(vbox);
+
+            ApplyAiConfigToUi();
 
             // 独立按钮：不动 panel/vbox 结构，单独 Add 到 layer
             var coopBtn = new Godot.Button
@@ -1146,6 +1245,120 @@ public static partial class CompanionMod
     // ---------- 主菜单按钮 + 双人开局 ----------
     // 注：主菜单 AddChild 已证明不可行（NMainMenuScroller + 线程模型问题），
     // 改为面板内「AI 双人档」按钮触发 OnCoopPressed。PollMenuButton 暂时留空。
+
+    // ---------- AI 来源配置 ----------
+
+    private static bool CoopUseApiBrain() => _useApiBrain;
+    private static string CoopApiBaseUrl() => _apiBaseUrl;
+    private static string CoopApiKey() => _apiKey;
+    private static string CoopApiModel() => _apiModel;
+
+    private static void LoadAiConfig()
+    {
+        try
+        {
+            _loadingAiCfg = true;
+            if (_aiCfgPath.Length == 0 || !File.Exists(_aiCfgPath)) return;
+
+            var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(
+                File.ReadAllText(_aiCfgPath));
+            if (dict == null) return;
+
+            if (dict.TryGetValue("mode", out string? mode))
+            {
+                _useApiBrain = string.Equals(mode, "api", StringComparison.OrdinalIgnoreCase);
+            }
+            if (dict.TryGetValue("baseUrl", out string? baseUrl) && baseUrl.Length > 0)
+            {
+                _apiBaseUrl = baseUrl;
+            }
+            if (dict.TryGetValue("model", out string? model) && model.Length > 0)
+            {
+                _apiModel = model;
+            }
+            if (dict.TryGetValue("apiKey", out string? key))
+            {
+                _apiKey = key;
+            }
+
+            LogError($"ai: 配置加载 mode={(_useApiBrain ? "api" : "local")} "
+                     + $"base={_apiBaseUrl} model={_apiModel} key={(_apiKey.Length > 0 ? "已设置" : "空")}");
+        }
+        catch (Exception ex)
+        {
+            LogError("ai: 配置加载失败: " + ex.Message);
+        }
+        finally
+        {
+            _loadingAiCfg = false;
+        }
+    }
+
+    private static void SaveAiConfig()
+    {
+        try
+        {
+            if (_aiCfgPath.Length == 0) return;
+
+            var dict = new Dictionary<string, string>
+            {
+                ["mode"] = _useApiBrain ? "api" : "local",
+                ["baseUrl"] = _apiBaseUrl,
+                ["apiKey"] = _apiKey,
+                ["model"] = _apiModel,
+            };
+            string? dir = Path.GetDirectoryName(_aiCfgPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            File.WriteAllText(_aiCfgPath, JsonSerializer.Serialize(dict, JsonOpts));
+            LogError($"ai: 配置已保存 mode={(_useApiBrain ? "api" : "local")} "
+                     + $"base={_apiBaseUrl} model={_apiModel} key={(_apiKey.Length > 0 ? "已设置" : "空")}");
+        }
+        catch (Exception ex)
+        {
+            LogError("ai: 配置保存失败: " + ex.Message);
+        }
+    }
+
+    private static void ApplyAiConfigToUi()
+    {
+        _loadingAiCfg = true;
+        try
+        {
+            if (_aiModeOption != null)
+            {
+                _aiModeOption.Selected = _useApiBrain ? 1 : 0;
+            }
+            if (_apiBaseEdit != null) _apiBaseEdit.Text = _apiBaseUrl;
+            if (_apiKeyEdit != null) _apiKeyEdit.Text = _apiKey;
+            if (_apiModelEdit != null) _apiModelEdit.Text = _apiModel;
+            UpdateApiBoxVisibility();
+        }
+        finally
+        {
+            _loadingAiCfg = false;
+        }
+    }
+
+    private static void UpdateApiBoxVisibility()
+    {
+        if (_apiBox != null) _apiBox.Visible = _useApiBrain;
+    }
+
+    private static void ReadApiFieldsFromUi()
+    {
+        if (_apiBaseEdit != null && _apiBaseEdit.Text.Trim().Length > 0)
+        {
+            _apiBaseUrl = _apiBaseEdit.Text.Trim();
+        }
+        if (_apiModelEdit != null && _apiModelEdit.Text.Trim().Length > 0)
+        {
+            _apiModel = _apiModelEdit.Text.Trim();
+        }
+        if (_apiKeyEdit != null)
+        {
+            _apiKey = _apiKeyEdit.Text.Trim();
+        }
+    }
 
     // ---------- 主菜单「单人 + AI」入口 / 两段式选人 ----------
 

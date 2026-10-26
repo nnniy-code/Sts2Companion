@@ -1,6 +1,6 @@
 # STS2 AI 队友 Mod — 交接文档
 
-> 2026-10-26 · `Sts2Companion` 0.2.0 · StS2 `v0.111.0`（Godot 4.5 + C# / .NET 9）
+> 2026-10-26 · `Sts2Companion` 0.3.0 · StS2 `v0.111.0`（Godot 4.5 + C# / .NET 9）
 
 ## 0. 一句话现状
 

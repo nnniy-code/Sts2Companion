@@ -3,7 +3,7 @@
   "name": "STS2 Companion",
   "author": "nnniy-code",
   "description": "Local co-op with an automated AI teammate: events, map, combat, rest sites, treasure. Single-player simulation, no network required.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "has_pck": false,
   "has_dll": true,
   "min_game_version": "0.107.1",

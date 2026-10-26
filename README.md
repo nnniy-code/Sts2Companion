@@ -2,7 +2,7 @@
 
 [English](README.en.md) | 中文
 
-![version](https://img.shields.io/badge/version-0.2.0-blue)
+![version](https://img.shields.io/badge/version-0.3.0-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![game](https://img.shields.io/badge/Slay%20the%20Spire%202-v0.111.0-orange)
 
@@ -10,7 +10,7 @@
 
 不是联机、不需要第二个玩家、不需要外部 AI 服务。游戏里会出现一个由 AI 控制的第二名角色，和你一起走地图、打牌、选事件、领奖励。
 
-> 当前是 **0.2.0 可玩测试版**，不是 1.0 正式版。  
+> 当前是 **0.3.0 可玩测试版**，不是 1.0 正式版。  
 > 已知问题见下方 [当前已知问题](#当前已知问题)。
 
 ---
@@ -145,7 +145,48 @@ AI 会自动行动，你正常玩自己的角色即可。
 | 按键 | 作用 |
 |---|---|
 | `F10` | 切换视角：临时接管 AI / 切回自己 |
-| `T` | 打开聊天/指令输入框（如果当前版本启用） |
+| `T` | 打开右侧面板/指令输入框 |
+
+### AI 来源：本地规则 / API
+
+按 **T** 打开右侧面板，顶部有 **「AI 来源」**：
+
+- **本地规则**：默认，不联网，使用 Mod 内置的战斗规则。
+- **API（战斗）**：调用 OpenAI 兼容的 `/chat/completions` 接口来决定 AI **战斗出牌**。
+
+选择 API 后填写：
+
+| 字段 | 例子 |
+|---|---|
+| Base URL | `https://api.openai.com/v1` |
+| API Key | `sk-...` |
+| 模型 | `gpt-4o-mini` / `deepseek-chat` |
+
+也可以使用其它 OpenAI 兼容服务，例如 DeepSeek：
+
+```text
+Base URL: https://api.deepseek.com
+模型: deepseek-chat
+```
+
+说明：
+
+- 当前 API 模式**只接管战斗出牌**；事件、地图、篝火、宝箱和奖励仍使用本地规则。
+- API 超时、报错、返回非法卡牌时会**自动回退本地规则**，不会让战斗卡死。
+- 每打一张牌会请求一次 API，因此会有延迟和 token 费用。
+- API Key 明文保存在本机：
+
+```text
+D:\sts2_companion\state\companion_ai.json
+```
+
+或：
+
+```text
+%APPDATA%\SlayTheSpire2\sts2_companion\companion_ai.json
+```
+
+不要把该文件发到网上，也不要提交到 GitHub。仓库的 `.gitignore` 已忽略 state 目录。
 
 ### 卡住时
 
@@ -167,7 +208,7 @@ D:\sts2_companion\state\mod_error.log
 
 ## 当前已知问题
 
-这是 **0.2.0 测试版**，以下问题已知：
+这是 **0.3.0 测试版**，以下问题已知：
 
 ### 1. 商店
 
@@ -265,7 +306,7 @@ https://github.com/nnniy-code/Sts2Companion/releases/latest
 Release 压缩包内容：
 
 ```text
-Sts2Companion-0.2.0.zip
+Sts2Companion-0.3.0.zip
 ├── Sts2Companion.dll
 └── Sts2Companion.json
 ```

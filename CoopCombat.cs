@@ -1,7 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Reflection;
+using System.Text;
+using System.Text.Json;
 using System.Threading.Tasks;
 using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Commands;
@@ -43,6 +47,7 @@ public static partial class CompanionMod
     private static long _combatIdleMs;
     private static CombatState? _lastCombatState;
     private static bool _aiPlaying;
+    private static readonly HttpClient CoopApiHttp = new() { Timeout = TimeSpan.FromSeconds(12) };
 
 
     // IsPlayable 在 CardModel 上是 protected，只能反射读。
@@ -338,7 +343,7 @@ public static partial class CompanionMod
                     .ToList();
                 if (candidates.Count == 0) break;
 
-                var best = PickBestCard(cs, ai, pcs, candidates);
+                var best = await PickBestCardAsync(cs, ai, pcs, candidates);
                 if (best == null) break;
 
                 tried.Add(best);   // 同一张牌这一回合只尝试一次，避免反复打同一张
@@ -465,6 +470,250 @@ public static partial class CompanionMod
         {
             LogError("CoopCancelStuckAction: " + ex.Message);
         }
+    }
+
+    private static bool _apiKeyWarned;
+
+    /// <summary>
+    /// AI 出牌入口：API 模式先问 API，失败/没配置就回退本地规则。
+    /// API 只决定"打哪张牌"，目标仍由 ResolveAiTarget 本地选择。
+    /// </summary>
+    private static async Task<CardModel?> PickBestCardAsync(
+        CombatState cs, Player ai, PlayerCombatState pcs, List<CardModel> candidates)
+    {
+        if (!CoopUseApiBrain())
+        {
+            return PickBestCard(cs, ai, pcs, candidates);
+        }
+
+        var apiPick = await PickCardViaApiAsync(cs, ai, pcs, candidates);
+        if (apiPick != null) return apiPick;
+
+        return PickBestCard(cs, ai, pcs, candidates);
+    }
+
+    private static async Task<CardModel?> PickCardViaApiAsync(
+        CombatState cs, Player ai, PlayerCombatState pcs, List<CardModel> candidates)
+    {
+        try
+        {
+            string key = CoopApiKey().Trim();
+            if (key.Length == 0)
+            {
+                if (!_apiKeyWarned)
+                {
+                    _apiKeyWarned = true;
+                    LogError("coop-api: 未配置 API Key，回退本地规则");
+                }
+                return null;
+            }
+
+            string baseUrl = CoopApiBaseUrl().Trim();
+            if (baseUrl.Length == 0) baseUrl = "https://api.openai.com/v1";
+            string endpoint = baseUrl.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase)
+                ? baseUrl
+                : baseUrl.TrimEnd('/') + "/chat/completions";
+
+            string prompt = BuildApiCardPrompt(cs, ai, pcs, candidates);
+            var payload = new
+            {
+                model = CoopApiModel(),
+                messages = new object[]
+                {
+                    new
+                    {
+                        role = "system",
+                        content = "You control one character in Slay the Spire 2. "
+                                  + "Pick exactly one card from the provided candidates. "
+                                  + "Return ONLY JSON: {\"card\":\"<id>\",\"reason\":\"<short>\"}."
+                    },
+                    new { role = "user", content = prompt }
+                },
+                temperature = 0.2,
+                max_tokens = 120
+            };
+
+            using var req = new HttpRequestMessage(HttpMethod.Post, endpoint);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+            req.Content = new StringContent(
+                JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+
+            long started = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            using var resp = await CoopApiHttp.SendAsync(req);
+            string body = await resp.Content.ReadAsStringAsync();
+            long elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - started;
+
+            if (!resp.IsSuccessStatusCode)
+            {
+                string snippet = body.Length > 240 ? body.Substring(0, 240) : body;
+                LogError($"coop-api: HTTP {(int)resp.StatusCode} {elapsed}ms: {snippet}");
+                return null;
+            }
+
+            string? text = ExtractApiText(body);
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                LogError("coop-api: 响应没有 content，回退本地");
+                return null;
+            }
+
+            int l = text.IndexOf('{');
+            int r = text.LastIndexOf('}');
+            if (l < 0 || r <= l)
+            {
+                LogError("coop-api: 响应不是 JSON: " + (text.Length > 160 ? text.Substring(0, 160) : text));
+                return null;
+            }
+
+            using var doc = JsonDocument.Parse(text.Substring(l, r - l + 1));
+            var root = doc.RootElement;
+
+            string? want = root.TryGetProperty("card", out var cardEl) ? cardEl.GetString() : null;
+            int? wantIndex = null;
+            if (root.TryGetProperty("index", out var idxEl) && idxEl.ValueKind == JsonValueKind.Number
+                && idxEl.TryGetInt32(out int idx))
+            {
+                wantIndex = idx;
+            }
+
+            CardModel? picked = null;
+            if (wantIndex.HasValue && wantIndex.Value >= 0 && wantIndex.Value < candidates.Count)
+            {
+                picked = candidates[wantIndex.Value];
+            }
+            else if (!string.IsNullOrWhiteSpace(want))
+            {
+                picked = candidates.FirstOrDefault(c =>
+                    string.Equals(Safe(() => c.Id.Entry, ""), want, StringComparison.OrdinalIgnoreCase));
+                if (picked == null)
+                {
+                    picked = candidates.FirstOrDefault(c =>
+                        string.Equals(Safe(() => c.Title, ""), want,
+                                      StringComparison.OrdinalIgnoreCase));
+                }
+            }
+
+            if (picked == null)
+            {
+                LogError($"coop-api: 无效卡牌 {want ?? "?"}，回退本地");
+                return null;
+            }
+
+            string reason = root.TryGetProperty("reason", out var reasonEl)
+                ? (reasonEl.GetString() ?? "")
+                : "";
+            if (reason.Length > 80) reason = reason.Substring(0, 80);
+            LogError($"coop-api: 选择 {Safe(() => picked.Id.Entry, "?")} "
+                     + $"({elapsed}ms) {reason}");
+            return picked;
+        }
+        catch (TaskCanceledException)
+        {
+            LogError("coop-api: 请求超时，回退本地");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            LogError("coop-api: 请求失败，回退本地: " + ex.Message);
+            return null;
+        }
+    }
+
+    private static string? ExtractApiText(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("choices", out var choices)
+                || choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() == 0)
+            {
+                return null;
+            }
+
+            var first = choices[0];
+            if (first.TryGetProperty("message", out var msg)
+                && msg.TryGetProperty("content", out var content))
+            {
+                if (content.ValueKind == JsonValueKind.String) return content.GetString();
+                if (content.ValueKind == JsonValueKind.Array)
+                {
+                    var parts = new StringBuilder();
+                    foreach (var part in content.EnumerateArray())
+                    {
+                        if (part.TryGetProperty("text", out var t)) parts.Append(t.GetString());
+                    }
+                    return parts.ToString();
+                }
+            }
+
+            if (first.TryGetProperty("text", out var textEl)) return textEl.GetString();
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string BuildApiCardPrompt(
+        CombatState cs, Player ai, PlayerCombatState pcs, List<CardModel> candidates)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("State:");
+        sb.AppendLine($"- Your HP: {Safe(() => ai.Creature?.CurrentHp ?? 0, 0)}/"
+                      + $"{Safe(() => ai.Creature?.MaxHp ?? 0, 0)}, "
+                      + $"Block: {Safe(() => ai.Creature?.Block ?? 0, 0)}, "
+                      + $"Energy: {Safe(() => pcs.Energy, 0)}");
+        sb.AppendLine($"- Total incoming attack damage: {CoopIncomingDamage(cs)}");
+
+        sb.AppendLine("Enemies:");
+        int enemyIndex = 0;
+        foreach (var enemy in cs.HittableEnemies)
+        {
+            if (enemy == null || !Safe(() => enemy.IsAlive, false)) continue;
+            sb.AppendLine($"- [{enemyIndex}] {Safe(() => enemy.Name, "?")}: "
+                          + $"HP {Safe(() => enemy.CurrentHp, 0)}/{Safe(() => enemy.MaxHp, 0)}, "
+                          + $"Block {Safe(() => enemy.Block, 0)}, "
+                          + $"intent damage {CoopEnemyIntentDamage(cs, enemy)}");
+            enemyIndex++;
+        }
+
+        sb.AppendLine("Playable cards:");
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            var c = candidates[i];
+            string desc = Safe(() => c.Description.GetFormattedText(), "");
+            if (desc.Length > 110) desc = desc.Substring(0, 110);
+            sb.AppendLine($"- [{i}] id={Safe(() => c.Id.Entry, "?")}, "
+                          + $"name={Safe(() => c.Title, "?")}, "
+                          + $"cost={CoopCardCost(c)}, type={Safe(() => c.Type.ToString(), "?")}, "
+                          + $"damage={CoopCardDamage(c)}, block={CoopCardBlock(c)}, "
+                          + $"desc={desc}");
+        }
+
+        sb.AppendLine("Pick one index/id. Do not explain outside JSON.");
+        return sb.ToString();
+    }
+
+    private static int CoopEnemyIntentDamage(CombatState cs, Creature enemy)
+    {
+        int total = 0;
+        try
+        {
+            var monster = Safe(() => enemy.Monster, (MonsterModel?)null);
+            if (monster == null) return 0;
+            var intents = Safe<IReadOnlyList<AbstractIntent>>(
+                () => monster.NextMove.Intents, Array.Empty<AbstractIntent>());
+            foreach (var intent in intents)
+            {
+                if (intent is AttackIntent attack)
+                {
+                    total += Safe(() => attack.GetTotalDamage(cs.PlayerCreatures, enemy), 0);
+                }
+            }
+        }
+        catch { }
+        return total;
     }
 
     /// <summary>给当前局面挑一张最该打的牌。每打一张都重新调用，所以会随局面变化。</summary>

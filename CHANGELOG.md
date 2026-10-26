@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.0] - 2026-10-26
+
+### Added
+
+- AI source switch: local rules or OpenAI-compatible API
+- API settings in the in-game panel (`T`): Base URL, API key, model
+- API combat card selection with automatic fallback to local rules
+- API settings persisted to `companion_ai.json`
+
+### Notes
+
+- API mode currently controls combat card choice only; other flows stay local.
+- API key is stored in plain text in the local state directory.
+
 ## [0.2.0] - 2026-10-26
 
 第一个可玩的本地 AI 队友版本。

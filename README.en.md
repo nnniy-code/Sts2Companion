@@ -1,6 +1,6 @@
 # STS2 Companion
 
-![version](https://img.shields.io/badge/version-0.2.0-blue)
+![version](https://img.shields.io/badge/version-0.3.0-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![game](https://img.shields.io/badge/Slay%20the%20Spire%202-v0.111.0-orange)
 
@@ -10,7 +10,7 @@ A **local AI teammate** mod for *Slay the Spire 2*.
 
 No networking, no second human player, no external AI service. The game creates a second character controlled by the AI, and that character travels, fights, picks events, and collects rewards with you.
 
-> This is **v0.2.0, a playable test build**, not a 1.0 release.  
+> This is **v0.3.0, a playable test build**, not a 1.0 release.  
 > See [Known Issues](#known-issues) before playing.
 
 ---
@@ -150,7 +150,48 @@ The AI acts automatically; play your own character normally.
 | Key | Action |
 |---|---|
 | `F10` | Switch view: temporarily take over the AI, then switch back |
-| `T` | Open the chat/command input, if enabled in the current build |
+| `T` | Open the right-side panel / command input |
+
+### AI Source: Local Rules or API
+
+Press **T** to open the right-side panel. The **AI Source** dropdown has:
+
+- **Local rules**: default, offline, uses the mod's built-in combat heuristics.
+- **API (combat)**: calls an OpenAI-compatible `/chat/completions` endpoint to choose the AI's **combat card**.
+
+API fields:
+
+| Field | Example |
+|---|---|
+| Base URL | `https://api.openai.com/v1` |
+| API Key | `sk-...` |
+| Model | `gpt-4o-mini` / `deepseek-chat` |
+
+DeepSeek example:
+
+```text
+Base URL: https://api.deepseek.com
+Model: deepseek-chat
+```
+
+Notes:
+
+- API mode currently controls **combat card choice only**; events, map, rest sites, treasure, and rewards still use local rules.
+- On timeout, HTTP error, or invalid card, the mod **falls back to local rules**; combat will not hang.
+- The API is called once per card played, so expect latency and token cost.
+- The API key is stored in plain text locally:
+
+```text
+D:\sts2_companion\state\companion_ai.json
+```
+
+or:
+
+```text
+%APPDATA%\SlayTheSpire2\sts2_companion\companion_ai.json
+```
+
+Do not share or commit this file. The repository `.gitignore` excludes the state directory.
 
 ### If Something Gets Stuck
 
@@ -172,7 +213,7 @@ If there is no D: drive, the mod falls back to:
 
 ## Known Issues
 
-This is **v0.2.0, a test build**.
+This is **v0.3.0, a test build**.
 
 ### 1. Shops
 
@@ -270,7 +311,7 @@ https://github.com/nnniy-code/Sts2Companion/releases/latest
 Release asset:
 
 ```text
-Sts2Companion-0.2.0.zip
+Sts2Companion-0.3.0.zip
 ├── Sts2Companion.dll
 └── Sts2Companion.json
 ```
