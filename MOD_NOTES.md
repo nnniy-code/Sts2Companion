@@ -233,4 +233,18 @@ coop-watch:   选牌器=已挂上 待应答选择=0
 - 如果某个 mod 角色的 `CharacterModel` 不能用于 `Player.CreateForNewRun`，会在
   `coop 崩溃:` 里看到异常；把日志发回来即可针对该 mod 加兼容。
 
+---
+
+## 十、AI 来源：本地规则 / API（0.3.0）
+
+- 右侧面板（战斗中自动显示，主菜单按 `T` 强制显示）顶部「AI 来源」：
+  - `本地规则`：`PickBestCard()`
+  - `API（战斗）`：`PickCardViaApiAsync()`
+- API 是 OpenAI 兼容 `POST {baseUrl}/chat/completions`，每打一张牌请求一次。
+- 请求只发 AI 手牌候选、能量、血量、敌人意图；要求模型返回 `{"card":"<id>"}`。
+- 返回非法/超时/HTTP 错误一律回退本地规则，不阻塞战斗。
+- 配置存 `state\companion_ai.json`（API Key 明文，不要提交/外传）。
+- 目前只接管战斗出牌；事件/地图/篝火/宝箱仍本地规则。
+- `CoopApiHttp` 超时 12 秒；`PlayAiCardsAsync` 已改为 `await PickBestCardAsync`。
+
 

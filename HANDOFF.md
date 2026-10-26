@@ -89,6 +89,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy.ps1 -DryRun
 | 休息点 | AI 选治疗/锻造/首个可用项；地图旅行等双方选完才放行 | `coop-rest:` |
 | 宝箱遗物 | AI `OnPicked(ai,0)`；双方选完自动点继续 | `coop-treasure:` |
 | 章节转场 | AI `OnPlayerReady(ai,act)` | `coop-act:` |
+| AI 来源 | 面板切本地/API；API 走 `/chat/completions`，仅战斗 | `ai:` / `coop-api:` |
 
 ## 6. 挖出来的游戏 API 真相
 

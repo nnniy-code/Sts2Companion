@@ -583,7 +583,13 @@ public static partial class CompanionMod
             }
             else if (!string.IsNullOrWhiteSpace(want))
             {
-                picked = candidates.FirstOrDefault(c =>
+                if (int.TryParse(want.Trim(), out int numericIndex)
+                    && numericIndex >= 0 && numericIndex < candidates.Count)
+                {
+                    picked = candidates[numericIndex];
+                }
+
+                picked ??= candidates.FirstOrDefault(c =>
                     string.Equals(Safe(() => c.Id.Entry, ""), want, StringComparison.OrdinalIgnoreCase));
                 if (picked == null)
                 {
