@@ -1,5 +1,7 @@
 # STS2 Companion
 
+[English](README.en.md) | 中文
+
 ![version](https://img.shields.io/badge/version-0.2.0-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![game](https://img.shields.io/badge/Slay%20the%20Spire%202-v0.111.0-orange)
@@ -275,7 +277,8 @@ Sts2Companion/
 ├── HANDOFF.md             开发交接文档
 ├── MOD_NOTES.md           卡点/API 笔记
 ├── tools/                 只读调查工具（apiprobe / ildump）
-├── README.md
+├── README.md              中文说明
+├── README.en.md           English README
 ├── LICENSE
 └── CHANGELOG.md
 ```

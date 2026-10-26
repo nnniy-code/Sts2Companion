@@ -1,0 +1,318 @@
+# STS2 Companion
+
+![version](https://img.shields.io/badge/version-0.2.0-blue)
+![license](https://img.shields.io/badge/license-MIT-green)
+![game](https://img.shields.io/badge/Slay%20the%20Spire%202-v0.111.0-orange)
+
+[中文说明](README.md) | English
+
+A **local AI teammate** mod for *Slay the Spire 2*.
+
+No networking, no second human player, no external AI service. The game creates a second character controlled by the AI, and that character travels, fights, picks events, and collects rewards with you.
+
+> This is **v0.2.0, a playable test build**, not a 1.0 release.  
+> See [Known Issues](#known-issues) before playing.
+
+---
+
+## What This Mod Does
+
+The mod creates a two-character run:
+
+- **Player 1**: you
+- **Player 2**: a local AI teammate
+
+The AI teammate automatically handles:
+
+- Combat cards, targets, and multi-hit attacks
+- Post-combat gold, potions, and card rewards
+- Event choices and shared-event voting
+- Map routing
+- Rest sites (heal / smith / other available options)
+- Treasure relic selection
+- Card selection, discard, and scry prompts
+- Act-transition readiness
+
+The main menu gets a **`和 AI 玩`** (*Play with AI*) entry. The flow mirrors the vanilla single-player character select:
+
+1. Pick your character.
+2. Pick the AI teammate's character.
+3. Start the run.
+
+The character list comes from the vanilla character-select screen, so **base-game characters and registered mod characters both appear**.
+
+> The in-game UI is currently Chinese. The two confirmation buttons are:
+>
+> - `下一步：选队友（点这里）` — *Next: choose teammate (click here)*
+> - `开始双人（点这里）` — *Start co-op (click here)*
+
+---
+
+## Supported Game Version
+
+| Item | Value |
+|---|---|
+| Developed / tested on | **Slay the Spire 2 v0.111.0** |
+| Manifest minimum | `0.107.1` |
+| Engine | Godot 4.5 / .NET 9 |
+| Mod type | DLL-only mod (`has_dll: true`) |
+
+Notes:
+
+- Development and hands-on testing were done on **v0.111.0**.
+- The manifest declares `0.107.1` as the minimum, but older versions were **not individually tested**.
+- Game updates can rename internal APIs and break the mod. If that happens, please open an issue with a log.
+
+---
+
+## Installation
+
+### 1. Download
+
+Download the latest zip from Releases:
+
+**https://github.com/nnniy-code/Sts2Companion/releases/latest**
+
+The zip contains only:
+
+```text
+Sts2Companion.dll
+Sts2Companion.json
+```
+
+### 2. Extract into the Mods folder
+
+Put both files here:
+
+```text
+<your game folder>\Slay the Spire 2\mods\Sts2Companion\
+```
+
+Steam default example:
+
+```text
+D:\steam\steamapps\common\Slay the Spire 2\mods\Sts2Companion\
+```
+
+Correct layout:
+
+```text
+Slay the Spire 2\
+└── mods\
+    └── Sts2Companion\
+        ├── Sts2Companion.dll
+        └── Sts2Companion.json
+```
+
+Do not add an extra folder level, and do not rename the files.
+
+### 3. Launch
+
+- If your game has a mod manager, make sure `STS2 Companion` is enabled.
+- Fully restart the game (returning to the main menu is not enough).
+- A **`和 AI 玩`** entry should appear.
+
+If **RitsuLib** is installed, the button is inserted into its scrolling main-menu column. Without RitsuLib, the vanilla menu layout is used (this combination has not been fully tested in-game).
+
+### Uninstall
+
+Delete the folder:
+
+```text
+Slay the Spire 2\mods\Sts2Companion\
+```
+
+---
+
+## How to Start
+
+1. On the main menu, click **`和 AI 玩`**.
+2. Pick your character, then click **`下一步：选队友（点这里）`**.
+3. Pick the AI teammate, then click **`开始双人（点这里）`**.
+4. The run starts.
+
+The AI acts automatically; play your own character normally.
+
+### Controls
+
+| Key | Action |
+|---|---|
+| `F10` | Switch view: temporarily take over the AI, then switch back |
+| `T` | Open the chat/command input, if enabled in the current build |
+
+### If Something Gets Stuck
+
+Press **F10** to switch to the AI's view, complete the pending choice manually, then press F10 again.
+
+Log file:
+
+```text
+D:\sts2_companion\state\mod_error.log
+```
+
+If there is no D: drive, the mod falls back to:
+
+```text
+%APPDATA%\SlayTheSpire2\sts2_companion\mod_error.log
+```
+
+---
+
+## Known Issues
+
+This is **v0.2.0, a test build**.
+
+### 1. Shops
+
+The AI does not buy items and does not leave the shop automatically.
+
+- While the shop UI is open, automatic map travel is paused.
+- Leave the shop yourself with the vanilla leave button.
+
+### 2. Boss Relics
+
+AI act-transition readiness is handled, but **Boss relic selection can still stall if it uses the remote-choice path**.
+
+- Press F10 and choose a relic manually.
+- This is not fully solved yet.
+
+### 3. Special Events / Minigames
+
+Some events use their own UI or the underlying `PlayerChoiceSynchronizer`; these are not fully covered:
+
+- Special card-selection minigames
+- Some multi-page events
+- UIs that require complex confirmation
+
+If one gets stuck, press F10 and take over.
+
+### 4. The AI Is Not a Expert Player
+
+The AI aims to **finish content**, not to play optimally:
+
+- Card order follows simple rules
+- It may waste potions/gold
+- It may not take the optimal map route
+- It may perform poorly with complex modded cards
+
+### 5. Mod Character Compatibility
+
+Characters are read from `ModelDb.AllCharacters`, so modded characters appear.
+
+However, different mods implement `CharacterModel` differently:
+
+- Most characters work
+- A few may fail during `Player.CreateForNewRun`
+- On failure, the mod falls back to Ironclad/Silent and writes the error to the log
+
+### 6. Not a Network Multiplayer Mod
+
+This is a **local, simulated two-player run**:
+
+- No second human is required
+- No network co-op
+- No two-human lobby
+
+---
+
+## Build From Source
+
+Requirements:
+
+- .NET 9 SDK
+- *Slay the Spire 2* v0.111.0 (or a compatible version)
+- `data_sts2_windows_x86_64\sts2.dll` and `GodotSharp.dll` from your game install
+
+```powershell
+git clone https://github.com/nnniy-code/Sts2Companion.git
+cd Sts2Companion
+
+dotnet build -c Release
+```
+
+If the game is not at the default path, override `GameDir`:
+
+```powershell
+dotnet build -c Release `
+  -p:GameDir="E:\SteamLibrary\steamapps\common\Slay the Spire 2\data_sts2_windows_x86_64"
+```
+
+Deploy to the game's Mods folder:
+
+```powershell
+.\deploy.ps1
+```
+
+`deploy.ps1` auto-detects the Steam game folder; you can also pass an explicit path.
+
+> The repository does not contain `sts2.dll`, `GodotSharp.dll`, or game assets. Build against your own game installation.
+
+---
+
+## Release Download
+
+**Latest release:**
+
+https://github.com/nnniy-code/Sts2Companion/releases/latest
+
+Release asset:
+
+```text
+Sts2Companion-0.2.0.zip
+├── Sts2Companion.dll
+└── Sts2Companion.json
+```
+
+If the Releases page has no asset yet, build from source using the instructions above.
+
+---
+
+## Project Layout
+
+```text
+Sts2Companion/
+├── Mod.cs                 Entry point, UI, run setup
+├── CoopAI.cs              Event/map/rest/treasure logic
+├── CoopCombat.cs          Combat AI, card selection, rewards
+├── CoopView.cs            F10 view switching
+├── CoopWatch.cs           Stall diagnostics
+├── Sts2Companion.csproj   C# project
+├── Sts2Companion.json     Mod manifest
+├── deploy.ps1             Build + deploy helper
+├── HANDOFF.md             Developer handoff notes
+├── MOD_NOTES.md           API / blocker notes
+├── tools/                 Read-only investigation tools
+├── README.md              Chinese README
+├── README.en.md           English README
+├── LICENSE
+└── CHANGELOG.md
+```
+
+---
+
+## Contributing / Feedback
+
+Issues and pull requests are welcome.
+
+When reporting a bug, include:
+
+- Game version
+- Whether RitsuLib or other UI mods are installed
+- The last 50 lines of `mod_error.log`
+- The room type where it got stuck (combat / event / rest / shop / treasure / Boss)
+
+---
+
+## License
+
+MIT License. See [LICENSE](LICENSE).
+
+You may use, modify, and redistribute this project, including commercially, as long as the copyright notice is retained.
+
+---
+
+## Disclaimer
+
+This is an unofficial mod and is not affiliated with Mega Crit.
+
+*Slay the Spire 2* and its assets are the property of Mega Crit. This project does not contain game files.
