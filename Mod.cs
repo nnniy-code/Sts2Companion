@@ -3,7 +3,10 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Reflection;
+using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -103,6 +106,16 @@ public static partial class CompanionMod
     private static Godot.Button? _panelCloseButton;
     private static Godot.Label? _aiSourceLabel;
     private static bool _loadingAiCfg;
+
+    // 对话框：只有 API/本地模型模式可用；memory/persona 可持久化
+    private static string _chatPersona = "";
+    private static string _chatMemory = "";
+    private static Godot.LineEdit? _chatPersonaEdit;
+    private static Godot.LineEdit? _chatMemoryEdit;
+    private static bool _chatBusy;
+    private static string _chatDisplay = "";
+    private static long _chatDisplayUntilMs;
+    private static readonly List<Dictionary<string, string>> _chatHistory = new();
 
     // 0=follow game, 1=Chinese, 2=English
     private static int _langMode;
@@ -641,7 +654,7 @@ public static partial class CompanionMod
             panel.OffsetLeft = -400f;
             panel.OffsetRight = -16f;
             panel.OffsetTop = 110f;
-            panel.OffsetBottom = 650f;
+            panel.OffsetBottom = 700f;
 
             var vbox = new Godot.VBoxContainer
             {
@@ -788,7 +801,21 @@ public static partial class CompanionMod
                 PlaceholderText = "模型，例如 gpt-4o-mini / deepseek-chat",
                 CustomMinimumSize = new Godot.Vector2(0, 30),
             };
-            foreach (var edit in new[] { _apiBaseEdit, _apiKeyEdit, _apiModelEdit })
+            _chatPersonaEdit = new Godot.LineEdit
+            {
+                PlaceholderText = "调教 / 角色设定（可选）",
+                CustomMinimumSize = new Godot.Vector2(0, 30),
+            };
+            _chatMemoryEdit = new Godot.LineEdit
+            {
+                PlaceholderText = "长期记忆（可选，会发给模型）",
+                CustomMinimumSize = new Godot.Vector2(0, 30),
+            };
+            foreach (var edit in new[]
+                     {
+                         _apiBaseEdit, _apiKeyEdit, _apiModelEdit,
+                         _chatPersonaEdit, _chatMemoryEdit
+                     })
             {
                 edit.AddThemeFontSizeOverride("font_size", 12);
                 _apiBox.AddChild(edit);
@@ -1119,6 +1146,16 @@ public static partial class CompanionMod
                           "Press T to type, Enter to send, Esc to close");
             }
 
+            long nowChatMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (_chatBusy)
+            {
+                text = Tr("正在请求模型…", "Contacting model…");
+            }
+            else if (_chatDisplay.Length > 0 && nowChatMs < _chatDisplayUntilMs)
+            {
+                text = _chatDisplay;
+            }
+
             string summary = inCombat ? BuildSummary(root) : "";
             if (summary != _uiState)
             {
@@ -1404,6 +1441,14 @@ public static partial class CompanionMod
             {
                 _apiKey = key;
             }
+            if (dict.TryGetValue("chatPersona", out string? persona))
+            {
+                _chatPersona = persona;
+            }
+            if (dict.TryGetValue("chatMemory", out string? memory))
+            {
+                _chatMemory = memory;
+            }
             if (dict.TryGetValue("langMode", out string? langText)
                 && int.TryParse(langText, out int langMode))
             {
@@ -1438,6 +1483,8 @@ public static partial class CompanionMod
                 ["baseUrl"] = _apiBaseUrl,
                 ["apiKey"] = _apiKey,
                 ["model"] = _apiModel,
+                ["chatPersona"] = _chatPersona,
+                ["chatMemory"] = _chatMemory,
                 ["langMode"] = _langMode.ToString(),
             };
             string? dir = Path.GetDirectoryName(_aiCfgPath);
@@ -1465,6 +1512,8 @@ public static partial class CompanionMod
             if (_apiBaseEdit != null) _apiBaseEdit.Text = _apiBaseUrl;
             if (_apiKeyEdit != null) _apiKeyEdit.Text = _apiKey;
             if (_apiModelEdit != null) _apiModelEdit.Text = _apiModel;
+            if (_chatPersonaEdit != null) _chatPersonaEdit.Text = _chatPersona;
+            if (_chatMemoryEdit != null) _chatMemoryEdit.Text = _chatMemory;
             if (_langOption != null) _langOption.Selected = _langMode;
             UpdateApiBoxVisibility();
             ApplyLanguageToUi();
@@ -1496,10 +1545,12 @@ public static partial class CompanionMod
             if (_aiModeOption != null)
             {
                 _aiModeOption.SetItemText(0, Tr("本地规则", "Local rules"));
-                _aiModeOption.SetItemText(1, Tr("API（战斗）", "API (combat)"));
+                _aiModeOption.SetItemText(1, Tr("API / 本地模型", "API / local model"));
                 _aiModeOption.TooltipText = Tr(
-                    "本地规则不联网；API 模式目前只接管战斗出牌，其它流程仍用本地规则",
-                    "Local rules stay offline. API mode controls combat card choice only; other flows stay local.");
+                    "本地规则不联网；选择 API/本地模型后，战斗出牌和对话框都会走这个 OpenAI 兼容接口。"
+                    + "本地模型可填 http://127.0.0.1:11434/v1 这类地址。",
+                    "Local rules stay offline. API/local-model mode uses the OpenAI-compatible endpoint "
+                    + "for combat cards and chat. For Ollama, use e.g. http://127.0.0.1:11434/v1.");
             }
             if (_apiBaseEdit != null)
             {
@@ -1516,10 +1567,22 @@ public static partial class CompanionMod
             if (_apiModelEdit != null)
             {
                 _apiModelEdit.PlaceholderText = Tr(
-                    "模型，例如 gpt-4o-mini / deepseek-chat",
-                    "Model, e.g. gpt-4o-mini / deepseek-chat");
+                    "模型，例如 gpt-4o-mini / deepseek-chat / qwen2.5",
+                    "Model, e.g. gpt-4o-mini / deepseek-chat / qwen2.5");
             }
-            if (_apiSaveButton != null) _apiSaveButton.Text = Tr("保存 API 设置", "Save API settings");
+            if (_chatPersonaEdit != null)
+            {
+                _chatPersonaEdit.PlaceholderText = Tr(
+                    "调教 / 角色设定（可选）",
+                    "Persona / role instructions (optional)");
+            }
+            if (_chatMemoryEdit != null)
+            {
+                _chatMemoryEdit.PlaceholderText = Tr(
+                    "长期记忆（可选，会发给模型）",
+                    "Long-term memory (optional, sent to model)");
+            }
+            if (_apiSaveButton != null) _apiSaveButton.Text = Tr("保存模型设置", "Save model settings");
             if (_panelCloseButton != null) _panelCloseButton.Text = Tr("关闭面板", "Close panel");
             if (_input != null)
             {
@@ -1565,6 +1628,14 @@ public static partial class CompanionMod
         if (_apiKeyEdit != null)
         {
             _apiKey = _apiKeyEdit.Text.Trim();
+        }
+        if (_chatPersonaEdit != null)
+        {
+            _chatPersona = _chatPersonaEdit.Text.Trim();
+        }
+        if (_chatMemoryEdit != null)
+        {
+            _chatMemory = _chatMemoryEdit.Text.Trim();
         }
     }
 
@@ -2629,6 +2700,21 @@ public static partial class CompanionMod
         }
     }
 
+    private static bool ChatModelConfigured()
+    {
+        return _useApiBrain
+               && !string.IsNullOrWhiteSpace(_apiModel)
+               && !string.IsNullOrWhiteSpace(_apiBaseUrl);
+    }
+
+    private static void ShowChatMessage(string text)
+    {
+        _chatDisplay = text;
+        _chatDisplayUntilMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 120000;
+        _uiText = "";
+        LogError("chat: " + (text.Length > 160 ? text.Substring(0, 160) : text));
+    }
+
     private static void OnChatSubmit(string text)
     {
         text = text.Trim();
@@ -2636,27 +2722,127 @@ public static partial class CompanionMod
         {
             _input.Text = "";
         }
-        if (text.Length == 0)
+        if (text.Length == 0 || _chatBusy)
         {
             return;
         }
 
+        ReadApiFieldsFromUi();
+        SaveAiConfig();
+
+        if (!ChatModelConfigured())
+        {
+            ShowChatMessage(Tr(
+                "未接入模型，目前对话不可用。\n请在「AI 设置」里选择「API / 本地模型」，填写 Base URL 和模型名。",
+                "No model is connected, so chat is unavailable.\n"
+                + "Open AI Settings, choose API / local model, and fill in the Base URL and model."));
+            return;
+        }
+
+        _chatBusy = true;
+        _chatDisplay = Tr("你：", "You: ") + text + "\n\n" + Tr("正在请求模型…", "Contacting model…");
+        _chatDisplayUntilMs = long.MaxValue;
+        _uiText = "";
+        _ = ChatWithModelAsync(text);
+    }
+
+    private static async Task ChatWithModelAsync(string userText)
+    {
         try
         {
-            // 问题写盘，由后台 agent 带上当前局面问模型。
-            string dir = Path.GetDirectoryName(_outFile!) ?? ".";
-            string tmp = Path.Combine(dir, "ask.tmp");
-            File.WriteAllText(tmp, JsonSerializer.Serialize(new Dictionary<string, object?>
+            string baseUrl = _apiBaseUrl.Trim();
+            if (baseUrl.Length == 0) baseUrl = "https://api.openai.com/v1";
+            string endpoint = baseUrl.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase)
+                ? baseUrl
+                : baseUrl.TrimEnd('/') + "/chat/completions";
+
+            var messages = new List<object>();
+            var system = new StringBuilder();
+            system.AppendLine("You are the AI teammate in Slay the Spire 2. "
+                              + "Answer the player's chat naturally and concisely. "
+                              + "You are a game companion, not an all-purpose assistant.");
+            if (_chatPersona.Length > 0)
             {
-                ["id"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                ["text"] = text,
-            }, JsonOpts));
-            File.Move(tmp, Path.Combine(dir, "ask.json"), overwrite: true);
+                system.AppendLine("Persona / instructions from the player:");
+                system.AppendLine(_chatPersona);
+            }
+            if (_chatMemory.Length > 0)
+            {
+                system.AppendLine("Long-term memory from the player (treat as true):");
+                system.AppendLine(_chatMemory);
+            }
+            messages.Add(new { role = "system", content = system.ToString() });
+
+            foreach (var item in _chatHistory)
+            {
+                if (item.TryGetValue("role", out string? role)
+                    && item.TryGetValue("content", out string? content))
+                {
+                    messages.Add(new { role, content });
+                }
+            }
+            messages.Add(new { role = "user", content = userText });
+
+            var payload = new
+            {
+                model = _apiModel,
+                messages,
+                temperature = 0.7,
+                max_tokens = 500
+            };
+
+            using var req = new HttpRequestMessage(HttpMethod.Post, endpoint);
+            string key = _apiKey.Trim();
+            if (key.Length > 0)
+            {
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+            }
+            req.Content = new StringContent(
+                JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+
+            using var resp = await CoopApiHttp.SendAsync(req);
+            string body = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                string snippet = body.Length > 240 ? body.Substring(0, 240) : body;
+                FinishChat(Tr($"模型请求失败：HTTP {(int)resp.StatusCode}\n{snippet}",
+                              $"Model request failed: HTTP {(int)resp.StatusCode}\n{snippet}"));
+                return;
+            }
+
+            string? reply = ExtractApiText(body);
+            if (string.IsNullOrWhiteSpace(reply))
+            {
+                FinishChat(Tr("模型返回了空内容。", "The model returned an empty response."));
+                return;
+            }
+
+            _chatHistory.Add(new Dictionary<string, string>
+            {
+                ["role"] = "user", ["content"] = userText
+            });
+            _chatHistory.Add(new Dictionary<string, string>
+            {
+                ["role"] = "assistant", ["content"] = reply
+            });
+            while (_chatHistory.Count > 10) _chatHistory.RemoveAt(0);
+
+            FinishChat(Tr("你：", "You: ") + userText + "\n\n"
+                       + Tr("队友：", "Teammate: ") + reply);
         }
         catch (Exception ex)
         {
-            LogError("ask: " + ex);
+            FinishChat(Tr("对话请求异常：", "Chat request error: ") + ex.Message);
         }
+    }
+
+    private static void FinishChat(string display)
+    {
+        RunOnMain(() =>
+        {
+            _chatBusy = false;
+            ShowChatMessage(display);
+        });
     }
 
     private static string BuildSummary(Dictionary<string, object?> root)

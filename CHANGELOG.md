@@ -8,6 +8,8 @@
 - Per-teammate character selection: self → teammate 1 → teammate 2 → teammate 3
 - AI action order follows netId: 2 → 3 → 4
 - Rewards, rest sites, treasure, events, and combat process AIs sequentially
+- Chat box via OpenAI-compatible API/local model, with custom memory and persona
+- Clear "no model connected" message when chat is unavailable
 
 ### Fixed
 

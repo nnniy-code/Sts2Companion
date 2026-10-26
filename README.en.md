@@ -164,7 +164,7 @@ The AI acts automatically; play your own character normally.
 | Key | Action |
 |---|---|
 | `F10` | Switch view: temporarily take over the AI, then switch back |
-| `T` | Open the right-side panel / command input |
+| `T` | Open the right-side panel / chat input (needs a model) |
 
 ### Language: Follow Game / Chinese / English
 
@@ -200,7 +200,7 @@ Model: deepseek-chat
 
 Notes:
 
-- API mode currently controls **combat card choice only**; events, map, rest sites, treasure, and rewards still use local rules.
+- API mode controls **combat cards and chat**; events, map, rest sites, treasure, and rewards still use local rules.
 - On timeout, HTTP error, or invalid card, the mod **falls back to local rules**; combat will not hang.
 - The API is called once per card played, so expect latency and token cost.
 - The API key is stored in plain text locally:
@@ -290,9 +290,19 @@ However, different mods implement `CharacterModel` differently:
 - A few may fail during `Player.CreateForNewRun`
 - On failure, the mod falls back to Ironclad/Silent and writes the error to the log
 
-### 6. Chat Box Temporarily Disabled
+### 6. Chat / Memory / Persona
 
-The in-game chat box and AI conversation input are temporarily disabled for performance optimization. The AI teammate still acts automatically; chat will return later.
+Chat works, but requires a model:
+
+1. Open AI Settings.
+2. Set AI source to **API / local model**.
+3. Fill the Base URL, API key (may be empty for local models), and model name.
+4. Save.
+
+- With a model connected, typed messages return model replies.
+- Custom long-term memory and persona/role instructions are saved locally and sent as system context.
+- Without a model, the panel says "no model connected, chat unavailable".
+- For local models, use an OpenAI-compatible URL such as `http://127.0.0.1:11434/v1` (Ollama).
 
 ### 7. Not a Network Multiplayer Mod
 
