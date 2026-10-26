@@ -30,8 +30,7 @@
 
 ### Fixed
 
-- Shop: auto-click the vanilla leave button after 15 seconds to avoid a stall.
-- Shop map guard now only pauses while the shop UI is actually visible.
+- Shop: remove auto-leave and shop map guard; AI stands by until the local player leaves, then map travel resumes.
 
 ### Notes
 

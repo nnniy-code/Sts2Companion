@@ -213,7 +213,7 @@ coop-watch:   选牌器=已挂上 待应答选择=0
 - 多选按 `min/max` 取（min=0、max=2~3 时取满），AI 动作完成前不卸 selector。
 - 休息点用私有 `ChooseOption(ai,index)`；锻造时临时挂 selector，地图旅行等双方选完才放行。
 - 宝箱用 `TreasureRoomRelicSynchronizer.OnPicked(ai,0)`；章节转场用 `ActChangeSynchronizer.OnPlayerReady`。
-- 商店界面开着时暂停自动旅行；15 秒未离开自动点离开按钮。
+- 商店 AI 待机，等本地玩家离开后继续。
 - `CoopLoopNode` 复用，不再每次开局新增。
 - `deploy.ps1` 重写：路径自适应、哈希幂等、按需备份、`-DryRun` / `-Launch`。
 

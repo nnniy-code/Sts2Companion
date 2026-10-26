@@ -6,7 +6,7 @@
 
 单进程 2–4 人档（本地 netId=1 + AI netId=2/3/4，默认 3 人）已跑通：
 **事件 → 地图 → 战斗出牌 → 选牌/弃牌 → AI 领奖**。
-商店 15 秒自动离开；宝箱/章节转场已处理，Boss 遗物/底层选择仍有风险。
+商店 AI 待机；宝箱/章节转场已处理，Boss 遗物/底层选择仍有风险。
 AI 动作按 netId 顺序 2 → 3 → 4。
 卡住时按 **F10 切视角**人工接管。
 
@@ -251,7 +251,7 @@ RewardsSetSynchronizer.SkipRewardsSetOnStackTopForPlayer(Player) // private，�
 ## 9. 未解决
 
 1. **Boss 遗物**：如果走 `RelicSelectCmd.FromChooseARelicScreen` 的远程选择，单人档仍可能卡。
-   商店已改为 15 秒自动点离开。
+   商店已改为 AI 待机，等本地玩家离开。
 2. **`PlayerChoiceSynchronizer`**：走 `ReserveChoiceId/WaitForRemoteChoice/SyncLocalChoice`
    这层 AI 就永远等不到应答（`待应答选择>0`）。先搞清 `PlayerChoiceResult` 类型，选错更糟。
 3. **AI 阵亡后跳过回合**：已加 `UndoReadyToEndTurn` 缓解，未实机验证。

@@ -247,11 +247,12 @@ This is **v0.4.0, experimental**.
 
 ### 1. Shops
 
-The AI does not buy items.
+The AI does not buy items and **does not leave for you**.
 
-- If the shop is still open after 15 seconds, the mod clicks the vanilla leave button automatically to avoid a stall.
-- If you want to keep shopping, act within 15 seconds or leave manually.
-- While the shop UI is open, automatic map travel is paused so the shop is not skipped.
+- On entering a shop, the AI stands by and does not click anything.
+- Buy what you need, then click the vanilla leave button yourself.
+- After you leave, automatic map travel resumes and the AI follows your route.
+- The old 15-second auto-leave and shop map guard are removed.
 
 ### 2. Boss Relics
 

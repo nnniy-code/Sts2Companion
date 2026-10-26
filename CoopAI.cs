@@ -657,48 +657,17 @@ public static partial class CompanionMod
         }
     }
 
-    // ---------- 商店：AI 不留店，超时自动离开 ----------
+    // ---------- 商店：AI 完全待机，等本地玩家买完自己离开 ----------
 
     private static int _shopRoomHash = int.MinValue;
-    private static long _shopSinceMs;
-    private static bool _shopLeftSent;
 
     private static void CoopShopTick(RunState runState, MerchantRoom room)
     {
         int hash = room.GetHashCode();
-        if (hash != _shopRoomHash)
-        {
-            _shopRoomHash = hash;
-            _shopSinceMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            _shopLeftSent = false;
-            LogError("coop-shop: 进入商店");
-        }
+        if (hash == _shopRoomHash) return;
 
-        if (_shopLeftSent) return;
-
-        var ui = NMerchantRoom.Instance;
-        if (ui == null) return;
-
-        long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        if (nowMs - _shopSinceMs < 15000) return;
-
-        try
-        {
-            var proceed = ui.ProceedButton;
-            if (proceed == null)
-            {
-                LogError("coop-shop: 找不到离开按钮");
-                return;
-            }
-
-            _shopLeftSent = true;
-            LogError("coop-shop: 15 秒未离开，自动点离开");
-            proceed.ForceClick();
-        }
-        catch (Exception ex)
-        {
-            LogError("coop-shop: 自动离开失败: " + ex.Message);
-        }
+        _shopRoomHash = hash;
+        LogError("coop-shop: 进入商店，AI 待机；本地玩家买完点离开后一起走");
     }
 
     // ---------- 宝箱 / 遗物 ----------
@@ -847,7 +816,6 @@ public static partial class CompanionMod
     private static long _mapLastMs;    private static int _mapTriedGen = -1;
     private static long _mapRestBlockMs;
     private static long _mapTreasureBlockMs;
-    private static long _mapShopBlockMs;
     private static int _mapTries;
     private static bool _mapBothLogged;
     private static bool _mapTravelStarted;
@@ -899,21 +867,6 @@ public static partial class CompanionMod
                     _mapRestBlockMs = blockMs;
                     LogError($"coop-map: 休息点未选完，暂停自动旅行 "
                              + $"local={localChoice?.ToString() ?? "null"} aiAll={allAiChosen}");
-                }
-                return;
-            }
-        }
-
-        if (runState.CurrentRoom is MerchantRoom)
-        {
-            var shopUi = NMerchantRoom.Instance;
-            if (shopUi != null && shopUi.Visible)
-            {
-                long shopBlockMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                if (shopBlockMs - _mapShopBlockMs > 3000)
-                {
-                    _mapShopBlockMs = shopBlockMs;
-                    LogError("coop-map: 商店界面还开着，等自动离开或本地点离开");
                 }
                 return;
             }
