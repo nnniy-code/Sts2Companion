@@ -9,6 +9,10 @@
 - AI action order follows netId: 2 → 3 → 4
 - Rewards, rest sites, treasure, events, and combat process AIs sequentially
 
+### Fixed
+
+- The last AI no longer marks itself ready, so the local player's turn is not auto-ended/skipped.
+
 ### Notes
 
 - 3-player mode is the tested configuration; 4-player mode is experimental.
