@@ -1270,9 +1270,10 @@ public static partial class CompanionMod
             {
                 // 最小化只显示最近一条“用户输入 + 模型回答”，不显示战况/建议。
                 string mini = _chatDisplay.Length > 0
-                    ? _chatDisplay
+                    ? _chatDisplay.Replace('\n', ' ').Replace("  ", " ")
                     : Tr("按 T 输入对话；点「展开」恢复完整面板",
                          "Press T to chat; click Expand for the full panel");
+                if (mini.Length > 120) mini = mini.Substring(0, 120) + "…";
                 if (mini != _uiState)
                 {
                     _state?.SetDeferred("text", mini);
