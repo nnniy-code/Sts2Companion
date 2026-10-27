@@ -592,7 +592,7 @@ public static partial class CompanionMod
     // ---------- 休息点（篝火） ----------
 
     private static int _restRoomHash = int.MinValue;
-    private static bool _restChoiceSent;
+    private static readonly HashSet<ulong> _restChoicePending = new();
     private static long _restLastTryMs;
     private static MethodInfo? _miRestChoose;
 
@@ -615,18 +615,26 @@ public static partial class CompanionMod
         if (hash != _restRoomHash)
         {
             _restRoomHash = hash;
-            _restChoiceSent = false;
+            _restChoicePending.Clear();
             _restLastTryMs = 0;
             LogError("coop-rest: 进入休息点");
         }
 
-        if (_restChoiceSent) return;
+        // 清理已经记录选择但 Task 回调还没到的 pending，避免 3/4 号被永久挡住。
+        foreach (ulong pendingNet in _restChoicePending.ToList())
+        {
+            if (Safe(() => sync.GetChosenOptionIndex(pendingNet).HasValue, false))
+            {
+                _restChoicePending.Remove(pendingNet);
+            }
+        }
 
-        // 按 netId 顺序处理第一个还没选的 AI；2 选完再 3。
+        // 按 netId 顺序处理第一个还没选的 AI；2 选完再 3，再到 4。
         Player? ai = null;
         foreach (var candidate in ais)
         {
-            if (!Safe(() => sync.GetChosenOptionIndex(candidate.NetId).HasValue, false))
+            if (!_restChoicePending.Contains(candidate.NetId)
+                && !Safe(() => sync.GetChosenOptionIndex(candidate.NetId).HasValue, false))
             {
                 ai = candidate;
                 break;
@@ -704,6 +712,7 @@ public static partial class CompanionMod
             }
         }
 
+        _restChoicePending.Add(ai.NetId);
         try
         {
             _miRestChoose ??= typeof(RestSiteSynchronizer).GetMethod(
@@ -721,7 +730,6 @@ public static partial class CompanionMod
             }
 
             object? result = _miRestChoose.Invoke(sync, new object?[] { ai, index });
-            _restChoiceSent = true;
             LogError($"coop-rest: AI{ai.NetId} 选择 "
                      + $"{Safe(() => options[index].OptionId, "?")} (index={index})");
 
@@ -746,7 +754,7 @@ public static partial class CompanionMod
                                 LogError("coop-rest: ChooseOption 完成但没记录选择，允许重试");
                                 failed = true;
                             }
-                            _restChoiceSent = false;
+                            _restChoicePending.Remove(ai.NetId);
                             if (failed) _restLastTryMs = 0;
                         });
                     },
@@ -755,13 +763,13 @@ public static partial class CompanionMod
             else
             {
                 try { selectorScope?.Dispose(); } catch { }
-                _restChoiceSent = false;
+                _restChoicePending.Remove(ai.NetId);
             }
         }
         catch (Exception ex)
         {
             try { selectorScope?.Dispose(); } catch { }
-            _restChoiceSent = false;
+            _restChoicePending.Remove(ai.NetId);
             LogError("coop-rest: 选择崩: " + (ex.InnerException ?? ex).Message);
         }
     }
