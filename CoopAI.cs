@@ -957,11 +957,12 @@ public static partial class CompanionMod
         // 事件结束后游戏会先回到地图，再真正进入下一个房间。
         // 如果这里立刻自动旅行，头像会在地图上往前走，但房间场景没加载，表现就是"不进入关卡"。
         long mapNowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        if (runState.CurrentRoom is EventRoom)
+        if (runState.CurrentRoom is EventRoom && mapNowMs < _evMapBlockUntilMs)
         {
-            if (mapNowMs < _evMapBlockUntilMs) return;
-            var eventUi = NEventRoom.Instance;
-            if (eventUi != null && eventUi.Visible) return;
+            // 只按时间等 4 秒；不要再用 NEventRoom.Visible 判断。
+            // NEventRoom.Proceed() 只负责打开地图，事件节点可能仍然 Visible=true，
+            // 用它当守卫会让头像永远不动。
+            return;
         }
 
         var local = CoopLocalPlayer(runState);
