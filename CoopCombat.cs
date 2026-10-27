@@ -355,7 +355,8 @@ public static partial class CompanionMod
         {
             string key = $"{runState.CurrentActIndex}:"
                          + $"{Safe(() => runState.CurrentMapPoint?.PointType.ToString() ?? "?", "?")}:"
-                         + $"{Safe(() => runState.CurrentRoom?.GetType().Name ?? "null", "?")}";
+                         + $"{Safe(() => runState.CurrentRoom?.GetType().Name ?? "null", "?")}:"
+                         + $"{Safe(() => runState.CurrentRoom?.GetHashCode() ?? 0, 0)}";
             if (_lastRoomKey.Length > 0 && key != _lastRoomKey)
             {
                 CoopClearDownedAtRoomEnd(runState, $"离开房间 {_lastRoomKey} → {key}");
