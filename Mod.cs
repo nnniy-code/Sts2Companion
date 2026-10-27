@@ -1411,7 +1411,7 @@ public static partial class CompanionMod
         {
             _testBuildLogged = true;
             LogError("coop: ===============================================");
-            LogError("coop: TEST BUILD any-alive v10 已加载");
+            LogError("coop: TEST BUILD any-alive v11 已加载");
             LogError("coop: 这是私人测试版，不是公共稳定版");
             LogError("coop: ===============================================");
         }
@@ -1422,7 +1422,7 @@ public static partial class CompanionMod
         if (testBeatNow - _lastTestHeartbeatMs > 15000)
         {
             _lastTestHeartbeatMs = testBeatNow;
-            LogError("coop: TEST BUILD v10 heartbeat（测试版仍在运行）");
+            LogError("coop: TEST BUILD v11 heartbeat（测试版仍在运行）");
         }
 
         // 确保 KeyWatcher 存在（场景切换可能丢）
@@ -2660,6 +2660,7 @@ public static partial class CompanionMod
             // 所以必须放在下面那个 curRoom==null 的提前 return 之前。
             CoopResolveStaleCardChoice(runState);
             EnsureCombatWonHook();
+            EnsureRoomHooks();
             CoopRunResetTick(runState);
             CoopRoomEndTick(runState);
             CoopDeathTick(runState);

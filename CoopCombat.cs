@@ -360,6 +360,45 @@ public static partial class CompanionMod
         _downedMaxHp.Clear();
     }
 
+    private static bool _roomHooksInstalled;
+
+    private static void EnsureRoomHooks()
+    {
+        if (_roomHooksInstalled) return;
+        var rm = RunManager.Instance;
+        if (rm == null) return;
+        _roomHooksInstalled = true;
+        rm.RoomEntered += OnRoomEntered;
+        rm.RoomExited += OnRoomExited;
+        LogError("coop-downed-clear: 已订阅 RoomEntered / RoomExited");
+    }
+
+    private static void OnRoomEntered()
+    {
+        try
+        {
+            var runState = RunManager.Instance?.DebugOnlyGetState();
+            if (runState != null) CoopClearDownedAtRoomEnd(runState, "RoomEntered");
+        }
+        catch (Exception ex)
+        {
+            LogError("coop-downed-clear: RoomEntered: " + ex.Message);
+        }
+    }
+
+    private static void OnRoomExited()
+    {
+        try
+        {
+            var runState = RunManager.Instance?.DebugOnlyGetState();
+            if (runState != null) CoopClearDownedAtRoomEnd(runState, "RoomExited");
+        }
+        catch (Exception ex)
+        {
+            LogError("coop-downed-clear: RoomExited: " + ex.Message);
+        }
+    }
+
     private static void CoopRunResetTick(RunState runState)
     {
         if (ReferenceEquals(_lastRunState, runState)) return;
