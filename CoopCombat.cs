@@ -56,6 +56,7 @@ public static partial class CompanionMod
     private static CombatState? _deathHookState;
     private static readonly HashSet<ulong> _downedNetIds = new();
     private static readonly Dictionary<ulong, int> _downedMaxHp = new();
+    private static string _lastRoomKey = "";
     private static readonly HttpClient CoopApiHttp = new() { Timeout = TimeSpan.FromSeconds(12) };
 
 
@@ -172,6 +173,11 @@ public static partial class CompanionMod
     {
         if (ReferenceEquals(_deathHookState, cs)) return;
         _deathHookState = cs;
+        var runState = RunManager.Instance?.DebugOnlyGetState();
+        if (runState != null)
+        {
+            CoopClearDownedAtRoomEnd(runState, "新战斗开始");
+        }
         _downedNetIds.Clear();
         _downedMaxHp.Clear();
         foreach (var p in cs.Players)
@@ -294,6 +300,71 @@ public static partial class CompanionMod
         catch
         {
             return false;
+        }
+    }
+
+    private static void CoopClearDownedAtRoomEnd(RunState runState, string reason)
+    {
+        if (_downedNetIds.Count == 0) return;
+
+        var players = runState.Players.ToList();
+        int alive = players.Count(p => Safe(() => p.Creature?.IsAlive ?? false, false));
+        if (alive <= 0)
+        {
+            LogError($"coop-downed-clear: {reason} 触发，但全员已死，不复活");
+            return;
+        }
+
+        LogError($"coop-downed-clear: {reason} → 清除 downed，存活玩家回到 1 HP: "
+                 + string.Join(",", _downedNetIds));
+
+        foreach (ulong netId in _downedNetIds.ToList())
+        {
+            var p = players.FirstOrDefault(x => x.NetId == netId);
+            if (p?.Creature == null) continue;
+
+            try
+            {
+                if (!p.Creature.IsAlive || p.Creature.CurrentHp < 1)
+                {
+                    p.Creature.SetCurrentHpInternal(1);
+                }
+                if (_downedMaxHp.Remove(netId, out int originalMax))
+                {
+                    p.Creature.SetMaxHpInternal(originalMax);
+                }
+                if (p.Creature.CombatState is CombatState cs)
+                {
+                    SetDownedTargetable(cs, p.Creature, true);
+                }
+                LogError($"coop-downed-clear: net{netId} hp={p.Creature.CurrentHp} max={p.Creature.MaxHp}");
+            }
+            catch (Exception ex)
+            {
+                LogError($"coop-downed-clear: net{netId} 恢复失败: {ex.Message}");
+            }
+        }
+
+        _downedNetIds.Clear();
+        _downedMaxHp.Clear();
+    }
+
+    private static void CoopRoomEndTick(RunState runState)
+    {
+        try
+        {
+            string key = $"{runState.CurrentActIndex}:"
+                         + $"{Safe(() => runState.CurrentMapPoint?.PointType.ToString() ?? "?", "?")}:"
+                         + $"{Safe(() => runState.CurrentRoom?.GetType().Name ?? "null", "?")}";
+            if (_lastRoomKey.Length > 0 && key != _lastRoomKey)
+            {
+                CoopClearDownedAtRoomEnd(runState, $"离开房间 {_lastRoomKey} → {key}");
+            }
+            _lastRoomKey = key;
+        }
+        catch (Exception ex)
+        {
+            LogError("coop-downed-clear: room tick: " + ex.Message);
         }
     }
 
