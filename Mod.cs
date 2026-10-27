@@ -81,6 +81,10 @@ public static partial class CompanionMod
 
     private static Godot.LineEdit? _input;
     private static bool _panelForce;
+    private static bool _panelMinimized;
+    private static Godot.HBoxContainer? _aiRow;
+    private static Godot.HBoxContainer? _langRow;
+    private static Godot.HBoxContainer? _apiToolsRow;
     private static bool _tWasDown;
     private static bool _escWasDown;
 
@@ -711,6 +715,7 @@ public static partial class CompanionMod
                 MouseFilter = Godot.Control.MouseFilterEnum.Stop,
             };
             aiRow.AddThemeConstantOverride("separation", 6);
+            _aiRow = aiRow;
 
             var aiLabel = new Godot.Label
             {
@@ -751,6 +756,7 @@ public static partial class CompanionMod
                 MouseFilter = Godot.Control.MouseFilterEnum.Stop,
             };
             langRow.AddThemeConstantOverride("separation", 6);
+            _langRow = langRow;
 
             _langLabel = new Godot.Label
             {
@@ -837,6 +843,7 @@ public static partial class CompanionMod
                 MouseFilter = Godot.Control.MouseFilterEnum.Stop,
             };
             apiToolsRow.AddThemeConstantOverride("separation", 6);
+            _apiToolsRow = apiToolsRow;
 
             _apiSummaryLabel = new Godot.Label
             {
@@ -889,11 +896,7 @@ public static partial class CompanionMod
                 MouseFilter = Godot.Control.MouseFilterEnum.Stop,
             };
             closePanel.AddThemeFontSizeOverride("font_size", 12);
-            closePanel.Pressed += () =>
-            {
-                _panelForce = false;
-                if (_panel != null) _panel.Visible = false;
-            };
+            closePanel.Pressed += () => SetPanelMinimized(!_panelMinimized);
             _panelCloseButton = closePanel;
 
             vbox.AddChild(_head);
@@ -1256,10 +1259,25 @@ public static partial class CompanionMod
         {
             bool inCombat = root.TryGetValue("inCombat", out object? flag) && flag is bool b && b;
             int round = root.TryGetValue("round", out object? rv) && rv is int ri ? ri : 0;
-            bool show = inCombat || _panelForce;
+            bool show = inCombat || _panelForce || _panelMinimized;
             _panel.SetDeferred("visible", show);
             if (!show)
             {
+                return;
+            }
+
+            if (_panelMinimized)
+            {
+                // 最小化只显示最近一条“用户输入 + 模型回答”，不显示战况/建议。
+                string mini = _chatDisplay.Length > 0
+                    ? _chatDisplay
+                    : Tr("按 T 输入对话；点「展开」恢复完整面板",
+                         "Press T to chat; click Expand for the full panel");
+                if (mini != _uiState)
+                {
+                    _state?.SetDeferred("text", mini);
+                    _uiState = mini;
+                }
                 return;
             }
 
@@ -1688,6 +1706,39 @@ public static partial class CompanionMod
         if (_apiSummaryLabel != null) _apiSummaryLabel.Visible = _useApiBrain && !_apiExpanded;
     }
 
+    private static void SetPanelMinimized(bool minimized)
+    {
+        _panelMinimized = minimized;
+        _panelForce = true;
+        if (_panel != null)
+        {
+            _panel.Visible = true;
+            _panel.OffsetTop = minimized ? 8f : 110f;
+            _panel.OffsetBottom = minimized ? 150f : 700f;
+        }
+        if (_aiRow != null) _aiRow.Visible = !minimized;
+        if (_langRow != null) _langRow.Visible = !minimized;
+        if (_apiToolsRow != null) _apiToolsRow.Visible = !minimized;
+        if (_apiBox != null) _apiBox.Visible = !minimized && _useApiBrain && _apiExpanded;
+        if (_body != null) _body.Visible = !minimized;
+        if (_state != null) _state.Visible = true;
+        if (_personaPopup != null && minimized) _personaPopup.Visible = false;
+        if (_head != null)
+        {
+            _head.Text = minimized
+                ? Tr("AI 对话", "AI chat")
+                : Tr("STS2 队友", "STS2 Companion");
+        }
+        if (_panelCloseButton != null)
+        {
+            _panelCloseButton.Text = minimized
+                ? Tr("展开", "Expand")
+                : Tr("最小化", "Minimize");
+        }
+        _uiState = "";
+        _uiText = "";
+    }
+
     private static void UpdateApiSummary()
     {
         if (_apiSummaryLabel == null) return;
@@ -1727,7 +1778,12 @@ public static partial class CompanionMod
     {
         try
         {
-            if (_head != null) _head.Text = Tr("STS2 队友", "STS2 Companion");
+            if (_head != null)
+            {
+                _head.Text = _panelMinimized
+                    ? Tr("AI 对话", "AI chat")
+                    : Tr("STS2 队友", "STS2 Companion");
+            }
             if (_aiSourceLabel != null) _aiSourceLabel.Text = Tr("AI 来源", "AI source");
             if (_aiModeOption != null)
             {
@@ -1770,7 +1826,12 @@ public static partial class CompanionMod
                     "Long-term memory (optional, sent to model)");
             }
             if (_apiSaveButton != null) _apiSaveButton.Text = Tr("保存模型设置", "Save model settings");
-            if (_panelCloseButton != null) _panelCloseButton.Text = Tr("关闭面板", "Close panel");
+            if (_panelCloseButton != null)
+            {
+                _panelCloseButton.Text = _panelMinimized
+                    ? Tr("展开", "Expand")
+                    : Tr("最小化", "Minimize");
+            }
             if (_input != null)
             {
                 _input.PlaceholderText = Tr(
@@ -2913,6 +2974,7 @@ public static partial class CompanionMod
 
         if (tPressed && !_input.HasFocus())
         {
+            if (_panelMinimized) SetPanelMinimized(false);
             _panelForce = true;
             if (_panel != null)
             {
@@ -2924,7 +2986,7 @@ public static partial class CompanionMod
         {
             _input.Text = "";
             _input.ReleaseFocus();
-            _panelForce = false;
+            SetPanelMinimized(true);
         }
     }
 
