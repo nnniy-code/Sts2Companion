@@ -1215,21 +1215,27 @@ public static partial class CompanionMod
     {
         try
         {
-            if (runState.CurrentRoom is not CombatRoom)
+            bool inCombatRoom = runState.CurrentRoom is CombatRoom;
+            bool inEventRoom = runState.CurrentRoom is EventRoom;
+            if (!inCombatRoom && !inEventRoom)
             {
                 _rewardLogged = false;
                 _sawCombatThisRoom = false;
                 _aiRewardNoSetMs = 0;
                 return;
             }
-            if (Safe(() => CombatManager.Instance.IsInProgress, false))
+
+            if (inCombatRoom)
             {
-                _sawCombatThisRoom = true;   // 真打过一场，之后的"结束"才可信
-                return;
+                if (Safe(() => CombatManager.Instance.IsInProgress, false))
+                {
+                    _sawCombatThisRoom = true;   // 真打过一场，之后的"结束"才可信
+                    return;
+                }
+                // 刚进战斗房间、战斗还没开始时 IsInProgress 也是 false，
+                // 不加这个判断就会在开局瞬间误报一次"本地完成=False"。
+                if (!_sawCombatThisRoom) return;
             }
-            // 刚进战斗房间、战斗还没开始时 IsInProgress 也是 false，
-            // 不加这个判断就会在开局瞬间误报一次"本地完成=False"。
-            if (!_sawCombatThisRoom) return;
 
             // 这个 tick 被 PollCoopAI 以 25Hz 调用。先把 500ms 节流放在最前面，
             // 否则即使不尝试，每 40ms 也会 GetNextRewardIds().ToList() 分配一次。
@@ -1255,7 +1261,7 @@ public static partial class CompanionMod
             if (!_rewardLogged)
             {
                 _rewardLogged = true;
-                LogError($"coop-reward: 战斗结束 待领奖励集={ids.Count} ids=[{string.Join(",", ids)}]");
+                LogError($"coop-reward: 待领奖励集={ids.Count} ids=[{string.Join(",", ids)}] room={runState.CurrentRoom?.GetType().Name}");
                 foreach (var id in ids)
                 {
                     bool localDone = local != null && Safe(() => rss.IsRewardsSetCompleted(local, id), false);
