@@ -49,6 +49,8 @@ public static partial class CompanionMod
     private static CombatState? _lastCombatState;
     private static bool _aiPlaying;
     private static readonly Dictionary<ulong, int> _aiLastTurnByNet = new();
+    private static long _aiStartWaitMs;
+    private static int _aiStartKickRound = -1;
     private static bool _combatWonHooked;
     private static int _lastAliveMask = -1;
     private static bool _allDeadLogged;
@@ -655,6 +657,85 @@ public static partial class CompanionMod
         }
     }
 
+    /// <summary>
+    /// 本地已经 downed，但最后一个 AI 还活着时，游戏有时不会把 AI 从 Start 推进到 Play。
+    /// 只在“本地 downed + 有活 AI + 所有活 AI 都停在 Start/None 超过 1.5 秒”时踢一次。
+    /// </summary>
+    private static void CoopKickstartLastAi(CombatState cs)
+    {
+        try
+        {
+            var local = CoopLocalPlayerInCombat(cs);
+            if (local == null) return;
+
+            bool localDowned = !Safe(() => local.Creature?.IsAlive ?? false, false)
+                               || _downedNetIds.Contains(local.NetId);
+            if (!localDowned)
+            {
+                _aiStartWaitMs = 0;
+                return;
+            }
+
+            var aliveAis = CoopAiPlayersInCombat(cs)
+                .Where(p => Safe(() => p.Creature?.IsAlive ?? false, false)
+                            && !_downedNetIds.Contains(p.NetId))
+                .ToList();
+            if (aliveAis.Count == 0)
+            {
+                _aiStartWaitMs = 0;
+                return;
+            }
+
+            if (Safe(() => cs.CurrentSide, CombatSide.None) != CombatSide.Player) return;
+
+            if (aliveAis.Any(p => Safe(() => p.PlayerCombatState?.Phase == PlayerTurnPhase.Play, false)))
+            {
+                _aiStartWaitMs = 0;
+                return;
+            }
+
+            bool allWaiting = aliveAis.All(p =>
+            {
+                var phase = Safe(() => p.PlayerCombatState?.Phase ?? PlayerTurnPhase.None,
+                                 PlayerTurnPhase.None);
+                return phase is PlayerTurnPhase.Start or PlayerTurnPhase.None;
+            });
+            if (!allWaiting) return;
+
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (_aiStartWaitMs == 0)
+            {
+                _aiStartWaitMs = now;
+                return;
+            }
+            if (now - _aiStartWaitMs < 1500) return;
+
+            int round = Safe(() => cs.RoundNumber, 0);
+            if (_aiStartKickRound == round) return;
+            _aiStartKickRound = round;
+
+            foreach (var ai in aliveAis)
+            {
+                try
+                {
+                    if (ai.PlayerCombatState != null)
+                    {
+                        ai.PlayerCombatState.Phase = PlayerTurnPhase.Play;
+                        LogError($"coop-death: 本地 downed，强制 AI{ai.NetId} 从 Start → Play");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogError($"coop-death: 强制 AI{ai.NetId} Play 失败: {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LogError("coop-death: KickstartLastAi: " + ex.Message);
+        }
+    }
+
     private static void CoopCombatTick(CombatState cs)
     {
         // 切到 AI 视角时暂停自动出牌，交给人工
@@ -683,6 +764,8 @@ public static partial class CompanionMod
             _aiDeadLogged = false;
             _localEmergencyRevived = false;
             _aboutToLoseLogged = false;
+            _aiStartWaitMs = 0;
+            _aiStartKickRound = -1;
             EnsureDeathHooks(cs);
             LogError($"coop-combat: 新战斗（round={Safe(() => cs.RoundNumber, 0)}）→ 重置回合计数");
         }
@@ -691,6 +774,8 @@ public static partial class CompanionMod
 
         // 只要有一个 AI 还在出牌，就不再选下一个；否则会每帧重复打日志/抢动作队列。
         if (_aiPlaying) return;
+
+        CoopKickstartLastAi(cs);
 
         var ais = CoopAiPlayersInCombat(cs);
         if (ais.Count == 0) return;
