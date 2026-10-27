@@ -194,7 +194,7 @@ public static partial class CompanionMod
         {
             _evLocalDoneMs = eventNowMs;
             // 本地选完后给游戏留出关闭事件界面/加载下一房间的时间，避免地图抢跑。
-            if (_evMapBlockUntilMs == 0) _evMapBlockUntilMs = eventNowMs + 4000;
+            if (_evMapBlockUntilMs == 0) _evMapBlockUntilMs = eventNowMs + 6000;
         }
 
         // 某些事件（例如 WHISPERING_HOLLOW）的 AI 事件会因为卡牌/遗物子界面一直没有 IsFinished，
@@ -222,7 +222,7 @@ public static partial class CompanionMod
                     var task = NEventRoom.Proceed();
                     _evAdvanced = true;
                     _evAdvancedMs = eventNowMs;
-                    _evMapBlockUntilMs = eventNowMs + 4000;
+                    _evMapBlockUntilMs = eventNowMs + 6000;
                     if (task != null)
                     {
                         _ = task.ContinueWith(
@@ -570,7 +570,7 @@ public static partial class CompanionMod
 
         _evAdvanced = true;
         _evAdvancedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        _evMapBlockUntilMs = _evAdvancedMs + 4000;
+        _evMapBlockUntilMs = _evAdvancedMs + 6000;
         try
         {
             var task = NEventRoom.Proceed();
@@ -1034,6 +1034,19 @@ public static partial class CompanionMod
 
         var coord = localVote.Value.coord;
 
+        // 已经进过一个真实房间后，下一次打开地图时清掉上一次的旅行锁。
+        if (_mapTravelStarted && _mapTravelCoord.HasValue
+            && runState.CurrentMapCoord.HasValue
+            && runState.CurrentMapCoord.Value.Equals(_mapTravelCoord.Value)
+            && runState.CurrentRoom != null
+            && runState.CurrentRoom is not EventRoom)
+        {
+            _mapTravelStarted = false;
+            _mapTravelCoord = null;
+            _mapTravelRetries = 0;
+            try { NMapScreen.Instance?.SetTravelEnabled(true); } catch { }
+        }
+
         // ★ 关键分支：这套档是用 SetUpNewSingleplayer 建的，NetService.Type=Singleplayer。
         // 而 MapSelectionSynchronizer 只在 host/client 下才会把票结算成旅行
         // （PlayerVotedForMapCoord 里 _votes 集齐后还要过一个 host 判定），
@@ -1046,6 +1059,15 @@ public static partial class CompanionMod
         if (!votesResolvable)
         {
             long nowMs2 = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            // 上一次旅行还挂着时，不允许再点另一个节点。
+            // 否则第一次点击只是“正在加载”，第二次点击会再发起一次旅行，
+            // 最后变成同层横着走两个节点/连打两关。
+            if (_mapTravelStarted && _mapTravelCoord.HasValue
+                && !_mapTravelCoord.Value.Equals(coord))
+            {
+                return;
+            }
 
             // _mapTravelStarted 只用来防止「同一个目标点」重复触发。
             if (_mapTravelStarted && _mapTravelCoord.HasValue && _mapTravelCoord.Value.Equals(coord))
@@ -1195,6 +1217,9 @@ public static partial class CompanionMod
             LogError($"coop-map: 单机档(net={netType}) 进房间 floor={floor} "
                      + $"coord=({coord.col},{coord.row}) point={point.PointType} "
                      + $"addVisited={added} 原位置={beforeText}");
+
+            // 进房间是异步的；立刻锁掉地图，防止玩家以为没反应又点第二个节点。
+            try { NMapScreen.Instance?.SetTravelEnabled(false); } catch { }
 
             // 到站后再清一次票并刷新地图 UI。
             // _votes 被清空时如果没有触发 PlayerVotesCleared，NMapScreen.PlayerVoteDictionary 会留下
