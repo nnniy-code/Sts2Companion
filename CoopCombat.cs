@@ -1211,6 +1211,65 @@ public static partial class CompanionMod
     /// <summary>
     /// 胜利后的奖励/推进状态。AI 那侧的奖励集没人结束，下一次进战斗就会卡住。
     /// </summary>
+    private static bool _bossSawRewards;
+    private static bool _bossProceedSent;
+    private static long _bossProceedAtMs;
+
+    /// <summary>
+    /// Boss 奖励选完后不会自动回地图/进下一幕，需要在终端奖励界面点继续。
+    /// </summary>
+    private static void CoopBossProceedTick(RunState runState, RewardsSetSynchronizer rss)
+    {
+        try
+        {
+            var point = runState.CurrentMapPoint;
+            if (point == null || point.PointType != MapPointType.Boss)
+            {
+                _bossSawRewards = false;
+                _bossProceedSent = false;
+                _bossProceedAtMs = 0;
+                return;
+            }
+
+            if (Safe(() => CombatManager.Instance.IsInProgress, false)) return;
+            if (CoopLocalCardScreenOpen()) return;
+
+            var ids = (Safe(() => rss.GetNextRewardIds()?.ToList(), (List<int>?)null)
+                       ?? new List<int>()).Distinct().ToList();
+            if (ids.Count > 0)
+            {
+                _bossSawRewards = true;
+                _bossProceedAtMs = 0;
+                return;
+            }
+
+            if (!_bossSawRewards || _bossProceedSent) return;
+
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (_bossProceedAtMs == 0)
+            {
+                _bossProceedAtMs = now;
+                return;
+            }
+            if (now - _bossProceedAtMs < 1500) return;
+
+            _bossProceedSent = true;
+            LogError("coop-boss: Boss 奖励已选完，自动继续");
+            var task = RunManager.Instance.ProceedFromTerminalRewardsScreen();
+            if (task != null)
+            {
+                _ = task.ContinueWith(
+                    t => LogError("coop-boss: Proceed 异常: "
+                                  + (t.Exception?.InnerException?.Message ?? "?")),
+                    TaskContinuationOptions.OnlyOnFaulted);
+            }
+        }
+        catch (Exception ex)
+        {
+            LogError("coop-boss: " + ex.Message);
+        }
+    }
+
     private static void CoopRewardTick(RunState runState)
     {
         try
@@ -1249,6 +1308,8 @@ public static partial class CompanionMod
                 if (!_rewardLogged) { _rewardLogged = true; LogError("coop-reward: RewardsSetSynchronizer 是 null"); }
                 return;
             }
+
+            CoopBossProceedTick(runState, rss);
 
             var local = CoopLocalPlayer(runState);
             var ais = CoopAiPlayers(runState);
