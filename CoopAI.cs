@@ -1047,9 +1047,10 @@ public static partial class CompanionMod
         if (_mapTravelStarted && _mapTravelCoord.HasValue
             && runState.CurrentMapCoord.HasValue
             && runState.CurrentMapCoord.Value.Equals(_mapTravelCoord.Value)
-            && runState.CurrentRoom != null
-            && runState.CurrentRoom is not EventRoom)
+            && runState.CurrentRoom != null)
         {
+            // 到达事件房间也要解锁；否则事件结束后地图会一直以为“上一次旅行还没完成”，
+            // 点下一关会被当成第二个节点而忽略。
             _mapTravelStarted = false;
             _mapTravelCoord = null;
             _mapTravelRetries = 0;
