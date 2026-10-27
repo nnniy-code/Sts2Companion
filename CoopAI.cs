@@ -16,6 +16,7 @@ using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.TestSupport;
 
 namespace Sts2Companion;
 
@@ -35,6 +36,41 @@ namespace Sts2Companion;
 /// </summary>
 public static partial class CompanionMod
 {
+    // ---------- 残留选择清理 ----------
+
+    private static IDisposable? _staleChoiceSelector;
+
+    /// <summary>
+    /// 事件/选牌子界面被强制跳过后，PlayerChoiceSynchronizer 可能还留着一个 pending choice。
+    /// 房间会一直是 null（头像到位但进不去），这里在地图界面挂一个临时 AI 应答器把它清掉。
+    /// </summary>
+    private static void CoopResolveStaleCardChoice(RunState runState)
+    {
+        try
+        {
+            int pending = Safe(
+                () => RunManager.Instance.PlayerChoiceSynchronizer?.ChoiceIds?.Count ?? 0, 0);
+
+            if (pending <= 0)
+            {
+                _staleChoiceSelector?.Dispose();
+                _staleChoiceSelector = null;
+                return;
+            }
+
+            // 只在“地图界面 + 当前没有房间”时清理；正常事件/战斗选牌不碰。
+            if (runState.CurrentRoom != null) return;
+            if (Safe(() => CardSelectCmd.Selector, (ICardSelector?)null) != null) return;
+
+            _staleChoiceSelector = CardSelectCmd.PushSelector(new AiCardSelector(), false);
+            LogError($"coop-choice: 地图上残留待应答选择 {pending} 个，已挂 AI 应答器清理");
+        }
+        catch (Exception ex)
+        {
+            LogError("coop-choice: 清理失败: " + ex.Message);
+        }
+    }
+
     // ---------- 通用 ----------
 
     /// <summary>所有 AI 队友，按 netId 升序（1 是本地玩家）。</summary>

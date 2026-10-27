@@ -2333,6 +2333,7 @@ public static partial class CompanionMod
 
             // 地图跟票不依赖 CurrentRoom —— 地图界面上它经常是 null，
             // 所以必须放在下面那个 curRoom==null 的提前 return 之前。
+            CoopResolveStaleCardChoice(runState);
             CoopMapTick(runState);
             CoopRewardTick(runState);
             CoopWatchdog(runState);
