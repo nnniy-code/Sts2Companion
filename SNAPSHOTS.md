@@ -1,5 +1,42 @@
 # 版本快照 / 回滚点
 
+## v0.4.2-stable-20261027
+
+- 记录时间：2026-10-27 18:04（Asia/Shanghai）
+- Git commit：`c3dc579`
+- Git tag：`v0.4.2-stable-20261027`
+- DLL SHA256：
+  `B8196953FA025CA1BBB5A8A9B55F2599E16E4153392FE1FADA0C381637E48B7A`
+- DLL 大小：189,440 字节
+- 本机快照目录：
+  `snapshots\v0.4.2-20261027-1804`
+
+### 这个快照包含
+
+- 基线：v0.4.1 稳定版（downed、最后机会、房间清理等）
+- 只额外加入篝火多 AI 修复：
+  - AI2 选完继续 AI3
+  - AI3 选完继续 AI4
+  - 不再被全局 `_restChoiceSent` 挡住
+- 不包含实验性的“事件房间地图守卫”改动
+
+### 回滚方法
+
+```powershell
+cd C:\Users\LENOVO\Documents\deepseek-harness\default-workspace\Sts2Companion
+git checkout v0.4.2-stable-20261027
+```
+
+只回滚 DLL：
+
+```powershell
+Copy-Item `
+  "C:\Users\LENOVO\Documents\deepseek-harness\default-workspace\Sts2Companion\snapshots\v0.4.2-20261027-1804\Sts2Companion.dll" `
+  "D:\steam\steamapps\workshop\content\2868840\3827739973\Sts2Companion\Sts2Companion.dll" -Force
+```
+
+---
+
 ## v0.4.1-stable-20261027
 
 - 记录时间：2026-10-27 17:42（Asia/Shanghai）
