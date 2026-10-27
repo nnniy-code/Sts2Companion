@@ -15,6 +15,7 @@
 
 - In singleplayer, AI teammates no longer call `SetReadyToEndTurn`; that API always reports "all players ready" and was ending the local turn.
 - Card-selection events (e.g. SELF_HELP_BOOK) no longer block progression: the AI event is force-finished, and map travel waits for the room transition.
+- Map input is locked while a room is loading, preventing a second click from traveling two nodes on the same floor.
 
 ### Notes
 
