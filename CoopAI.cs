@@ -87,6 +87,7 @@ public static partial class CompanionMod
     private static long _evLocalDoneMs;
     private static bool _evAdvanced;
     private static bool _evForcedProceedLogged;
+    private static long _evLastForceMs;
     private static int _evRoomChoices;
     private static int _evProceedRetries;
     private static long _evAdvancedMs;
@@ -133,6 +134,7 @@ public static partial class CompanionMod
             _evLocalDoneMs = 0;
             _evAdvanced = false;
             _evForcedProceedLogged = false;
+            _evLastForceMs = 0;
             _evRoomChoices = 0;
             _evProceedRetries = 0;
             _evZombieLogged = false;
@@ -186,7 +188,8 @@ public static partial class CompanionMod
         // 某些事件（例如 WHISPERING_HOLLOW）的 AI 事件会因为卡牌/遗物子界面一直没有 IsFinished，
         // 本地已经选完却永远等不到 allAiDone。超过 4 秒就强制推进，避免整局卡死。
         if (!_evAdvanced && localDone && !allAiDone && _evLocalDoneMs > 0
-            && eventNowMs - _evLocalDoneMs > 4000)
+            && eventNowMs - _evLocalDoneMs > 4000
+            && eventNowMs - _evLastForceMs > 2000)
         {
             if (!_evForcedProceedLogged)
             {
@@ -198,6 +201,7 @@ public static partial class CompanionMod
             {
                 if (NEventRoom.Instance != null)
                 {
+                    _evLastForceMs = eventNowMs;
                     var task = NEventRoom.Proceed();
                     _evAdvanced = true;
                     _evAdvancedMs = eventNowMs;
