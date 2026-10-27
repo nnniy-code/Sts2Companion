@@ -1415,6 +1415,10 @@ public static partial class CompanionMod
         try { PollCoopMenuEntry(); }
         catch (Exception ex) { LogError("OnTreeProcessed PollCoopMenuEntry: " + ex.Message); }
 
+        // 保存退出再继续后，SceneTree 信号仍在，必须在这里也恢复 AI 模式。
+        try { TryRestoreCoopMode(); }
+        catch (Exception ex) { LogError("OnTreeProcessed restore: " + ex.Message); }
+
         // AI 双人档核心逻辑。
         // 多个驱动点是故意保留的：实测 CoopLoopNode._Process 在某些场景里不生效，
         // 只留一个会让整个循环停摆。重复调用的开销由 PollCoopAI 内部的 40ms 节流兜住，
