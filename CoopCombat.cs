@@ -58,6 +58,8 @@ public static partial class CompanionMod
     private static readonly Dictionary<ulong, int> _downedMaxHp = new();
     private static string _lastRoomKey = "";
     private static RunState? _lastRunState;
+    private static ulong _lastStandNetId;
+    private static bool _forceAllDead;
     private static readonly HttpClient CoopApiHttp = new() { Timeout = TimeSpan.FromSeconds(12) };
 
 
@@ -162,6 +164,7 @@ public static partial class CompanionMod
                     }
                 }
                 _downedNetIds.Clear();
+                _lastStandNetId = 0;
             }
         }
         catch (Exception ex)
@@ -235,6 +238,31 @@ public static partial class CompanionMod
         }
     }
 
+    private static void ForceAllPlayersDead(RunState runState, string reason)
+    {
+        if (_forceAllDead) return;
+        _forceAllDead = true;
+        _downedNetIds.Clear();
+        _downedMaxHp.Clear();
+        _lastStandNetId = 0;
+        LogError($"coop-death: {reason} → 强制所有玩家真正死亡");
+
+        foreach (var player in runState.Players.ToList())
+        {
+            try
+            {
+                if (player.Creature?.IsAlive == true)
+                {
+                    player.Creature.SetCurrentHpInternal(0);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"coop-death: 强制死亡 net{player.NetId}: {ex.Message}");
+            }
+        }
+    }
+
     private static void OnPlayerCreatureDied(Creature creature)
     {
         try
@@ -244,6 +272,19 @@ public static partial class CompanionMod
             var players = runState.Players.ToList();
             var dead = players.FirstOrDefault(p => ReferenceEquals(p.Creature, creature));
             if (dead == null) return;
+            if (_forceAllDead)
+            {
+                LogError($"coop-death: net{dead.NetId} 在强制全灭流程中，不再复活");
+                return;
+            }
+
+            if (_lastStandNetId != 0 && dead.NetId == _lastStandNetId)
+            {
+                _lastStandNetId = 0;
+                LogError($"coop-death: net{dead.NetId} 最后机会再次死亡 → 真正结束");
+                ForceAllPlayersDead(runState, "最后机会阵亡");
+                return;
+            }
 
             bool anyOtherAlive = players.Any(p => !ReferenceEquals(p, dead)
                                                     && Safe(() => p.Creature?.IsAlive ?? false, false));
@@ -358,6 +399,7 @@ public static partial class CompanionMod
 
         _downedNetIds.Clear();
         _downedMaxHp.Clear();
+        _lastStandNetId = 0;
     }
 
     private static bool _roomHooksInstalled;
@@ -408,6 +450,8 @@ public static partial class CompanionMod
         _lastRoomKey = "";
         _lastAliveMask = -1;
         _allDeadLogged = false;
+        _lastStandNetId = 0;
+        _forceAllDead = false;
         LogError("coop-downed-clear: 新 Run，丢弃上一局 downed 状态");
     }
 
@@ -466,6 +510,8 @@ public static partial class CompanionMod
             {
                 var release = alivePlayersNow[alivePlayersNow.Count - 1];
                 _downedNetIds.Remove(release.NetId);
+                _lastStandNetId = release.NetId;
+                try { release.Creature.SetCurrentHpInternal(1); } catch { }
                 if (_downedMaxHp.Remove(release.NetId, out int releaseMax))
                 {
                     try { release.Creature.SetMaxHpInternal(releaseMax); }
@@ -475,7 +521,7 @@ public static partial class CompanionMod
                 {
                     SetDownedTargetable(csReleaseAll, release.Creature, true);
                 }
-                LogError($"coop-death: 全员 downed → 释放 net{release.NetId} 行动，避免软锁");
+                LogError($"coop-death: 全员 downed → 释放 net{release.NetId} 最后机会（1 HP）");
             }
 
             // downed 锁血：只要场上还有别的活人，就把 downed 玩家锁在 1 HP。
