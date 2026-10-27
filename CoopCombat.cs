@@ -48,6 +48,9 @@ public static partial class CompanionMod
     private static CombatState? _lastCombatState;
     private static bool _aiPlaying;
     private static readonly Dictionary<ulong, int> _aiLastTurnByNet = new();
+    private static bool _combatWonHooked;
+    private static int _lastAliveMask = -1;
+    private static bool _allDeadLogged;
     private static readonly HttpClient CoopApiHttp = new() { Timeout = TimeSpan.FromSeconds(12) };
 
 
@@ -55,6 +58,109 @@ public static partial class CompanionMod
     // 费用/伤害/格挡都走公开 API（EnergyCost.GetResolved / DynamicVars），不再反射。
     private static readonly PropertyInfo? PiPlayable =
         typeof(CardModel).GetProperty("IsPlayable", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+
+    private static void EnsureCombatWonHook()
+    {
+        if (_combatWonHooked) return;
+        var cm = CombatManager.Instance;
+        if (cm == null) return;
+        _combatWonHooked = true;
+        cm.CombatWon += OnCombatWon;
+        LogError("coop-death: 已订阅 CombatWon（胜利后复活死亡队友）");
+    }
+
+    private static void OnCombatWon(CombatRoom room)
+    {
+        try
+        {
+            var runState = RunManager.Instance?.DebugOnlyGetState();
+            if (runState == null) return;
+
+            var players = runState.Players.ToList();
+            var dead = players.Where(p => p != null
+                                           && p.Creature != null
+                                           && !p.Creature.IsAlive).ToList();
+            int alive = players.Count(p => p?.Creature?.IsAlive == true);
+            LogError($"coop-death: CombatWon alive={alive} dead={dead.Count} "
+                     + string.Join(" ", dead.Select(p => $"net{p.NetId}")));
+
+            if (alive <= 0) return;   // 全灭，不复活
+
+            foreach (var p in dead)
+            {
+                try
+                {
+                    LogError($"coop-death: 胜利后复活 net{p.NetId}");
+                    Task task = p.ReviveBeforeCombatEnd();
+                    if (task != null)
+                    {
+                        _ = task.ContinueWith(
+                            t =>
+                            {
+                                LogError($"coop-death: net{p.NetId} ReviveBeforeCombatEnd "
+                                         + $"状态={t.Status} hp={Safe(() => p.Creature?.CurrentHp ?? -1, -1)}");
+                                RunOnMain(() =>
+                                {
+                                    if (!Safe(() => p.Creature?.IsAlive ?? false, false))
+                                    {
+                                        try
+                                        {
+                                            p.Creature?.SetCurrentHpInternal(1);
+                                            LogError($"coop-death: net{p.NetId} 回退 SetCurrentHpInternal(1)");
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            LogError($"coop-death: net{p.NetId} 复活回退失败: {ex.Message}");
+                                        }
+                                    }
+                                });
+                            },
+                            TaskContinuationOptions.ExecuteSynchronously);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogError($"coop-death: net{p.NetId} 复活失败: {(ex.InnerException ?? ex).Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LogError("coop-death: CombatWon 处理失败: " + ex.Message);
+        }
+    }
+
+    private static void CoopDeathTick(RunState runState)
+    {
+        try
+        {
+            var players = runState.Players.ToList();
+            int mask = 0;
+            for (int i = 0; i < players.Count && i < 31; i++)
+            {
+                if (players[i]?.Creature?.IsAlive == true) mask |= 1 << i;
+            }
+
+            if (mask != _lastAliveMask)
+            {
+                _lastAliveMask = mask;
+                _allDeadLogged = false;
+                LogError("coop-death: 存活状态 " + string.Join(" ",
+                    players.Select(p => $"net{p.NetId}={(Safe(() => p.Creature?.IsAlive ?? false, false) ? "alive" : "dead")}"
+                                        + $"/hp={Safe(() => p.Creature?.CurrentHp ?? -1, -1)}")));
+            }
+
+            if (mask == 0 && !_allDeadLogged)
+            {
+                _allDeadLogged = true;
+                LogError("coop-death: 全员阵亡 → 让游戏正常失败，不复活");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogError("coop-death: tick: " + ex.Message);
+        }
+    }
 
     private static void CoopCombatTick(CombatState cs)
     {
@@ -111,7 +217,8 @@ public static partial class CompanionMod
 
             var localP = CoopLocalPlayerInCombat(cs);
             if (localP != null
-                && Safe(() => localP.PlayerCombatState?.Phase == PlayerTurnPhase.Play, false)
+                && Safe(() => localP.Creature?.IsAlive ?? false, false)
+                && Safe(() => localP.PlayerCombatState?.Phase != PlayerTurnPhase.End, false)
                 && Safe(() => CombatManager.Instance.AllPlayersReadyToEndTurn(), false))
             {
                 long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -847,6 +954,32 @@ public static partial class CompanionMod
         {
             string netType = Safe(() => RunManager.Instance.NetService?.Type.ToString() ?? "?", "?");
             bool realMultiplayer = netType is not ("Singleplayer" or "None" or "?");
+            var turnLocal = CoopLocalPlayerInCombat(cs);
+            bool localDead = turnLocal == null
+                             || !Safe(() => turnLocal.Creature?.IsAlive ?? false, false);
+
+            if (!realMultiplayer && localDead)
+            {
+                // 本地已死，现在只剩 AI 在打。必须由最后一个活着的 AI 结束玩家方回合。
+                var aliveAis = CoopAiPlayersInCombat(cs)
+                    .Where(p => Safe(() => p.Creature?.IsAlive ?? false, false))
+                    .ToList();
+                ulong maxNet = aliveAis.Count > 0 ? aliveAis.Max(p => p.NetId) : ai.NetId;
+                if (ai.NetId == maxNet)
+                {
+                    var cmDead = CombatManager.Instance;
+                    if (!Safe(() => cmDead.IsPlayerReadyToEndTurn(ai), false))
+                    {
+                        cmDead.SetReadyToEndTurn(ai, false, null);
+                        LogError($"coop-death: 本地已死，最后一个 AI{ai.NetId} 结束回合");
+                    }
+                }
+                else
+                {
+                    LogError($"coop-death: 本地已死，AI{ai.NetId} 出完，继续下一个 AI");
+                }
+                return;
+            }
 
             if (!realMultiplayer && _partySize <= 2)
             {
