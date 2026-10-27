@@ -51,6 +51,8 @@ public static partial class CompanionMod
     private static bool _combatWonHooked;
     private static int _lastAliveMask = -1;
     private static bool _allDeadLogged;
+    private static bool _localEmergencyRevived;
+    private static bool _aboutToLoseLogged;
     private static readonly HttpClient CoopApiHttp = new() { Timeout = TimeSpan.FromSeconds(12) };
 
 
@@ -92,6 +94,18 @@ public static partial class CompanionMod
                 {
                     LogError($"coop-death: 胜利后复活 net{p.NetId}");
                     Task task = p.ReviveBeforeCombatEnd();
+                    if (!Safe(() => p.Creature?.IsAlive ?? false, false))
+                    {
+                        try
+                        {
+                            p.Creature?.SetCurrentHpInternal(1);
+                            LogError($"coop-death: net{p.NetId} 立即回退 1 HP");
+                        }
+                        catch (Exception ex)
+                        {
+                            LogError($"coop-death: net{p.NetId} 立即回退失败: {ex.Message}");
+                        }
+                    }
                     if (task != null)
                     {
                         _ = task.ContinueWith(
@@ -155,6 +169,33 @@ public static partial class CompanionMod
                 _allDeadLogged = true;
                 LogError("coop-death: 全员阵亡 → 让游戏正常失败，不复活");
             }
+
+            bool aboutToLose = Safe(() => CombatManager.Instance.IsAboutToLose, false);
+            if (aboutToLose != _aboutToLoseLogged)
+            {
+                _aboutToLoseLogged = aboutToLose;
+                LogError($"coop-death: IsAboutToLose={aboutToLose} aliveMask={mask}");
+            }
+
+            var local = CoopLocalPlayer(runState);
+            bool localDead = local == null
+                             || !Safe(() => local.Creature?.IsAlive ?? false, false);
+
+            // 本地死了但还有 AI 活着，游戏却要判负时：把本地拉回 1 HP，
+            // 让战斗继续；这不是最终死亡，胜利后仍按正常复活走。
+            if (localDead && mask != 0 && aboutToLose && !_localEmergencyRevived)
+            {
+                _localEmergencyRevived = true;
+                LogError("coop-death: 本地已死但还有队友，拦截判负 → 本地临时 1 HP");
+                try
+                {
+                    local?.Creature?.SetCurrentHpInternal(1);
+                }
+                catch (Exception ex)
+                {
+                    LogError("coop-death: 临时 1 HP 失败: " + ex.Message);
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -188,6 +229,8 @@ public static partial class CompanionMod
             _aiLastTurnByNet.Clear();
             _combatLogged = false;
             _aiDeadLogged = false;
+            _localEmergencyRevived = false;
+            _aboutToLoseLogged = false;
             LogError($"coop-combat: 新战斗（round={Safe(() => cs.RoundNumber, 0)}）→ 重置回合计数");
         }
 
