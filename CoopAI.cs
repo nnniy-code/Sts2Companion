@@ -256,7 +256,7 @@ public static partial class CompanionMod
         {
             _evLocalDoneMs = eventNowMs;
             // 本地选完后给游戏留出关闭事件界面/加载下一房间的时间，避免地图抢跑。
-            if (_evMapBlockUntilMs == 0) _evMapBlockUntilMs = eventNowMs + 6000;
+            if (_evMapBlockUntilMs == 0) _evMapBlockUntilMs = eventNowMs + 1500;
         }
 
         // 某些事件（例如 WHISPERING_HOLLOW）的 AI 事件会因为卡牌/遗物子界面一直没有 IsFinished，
@@ -284,7 +284,7 @@ public static partial class CompanionMod
                     var task = NEventRoom.Proceed();
                     _evAdvanced = true;
                     _evAdvancedMs = eventNowMs;
-                    _evMapBlockUntilMs = eventNowMs + 6000;
+                    _evMapBlockUntilMs = eventNowMs + 4000;
                     if (task != null)
                     {
                         _ = task.ContinueWith(
@@ -632,7 +632,7 @@ public static partial class CompanionMod
 
         _evAdvanced = true;
         _evAdvancedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        _evMapBlockUntilMs = _evAdvancedMs + 6000;
+        _evMapBlockUntilMs = _evAdvancedMs + 1500;
         try
         {
             var task = NEventRoom.Proceed();
