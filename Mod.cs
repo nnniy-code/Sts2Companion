@@ -110,8 +110,13 @@ public static partial class CompanionMod
     // 对话框：只有 API/本地模型模式可用；memory/persona 可持久化
     private static string _chatPersona = "";
     private static string _chatMemory = "";
-    private static Godot.LineEdit? _chatPersonaEdit;
-    private static Godot.LineEdit? _chatMemoryEdit;
+    private static Godot.TextEdit? _chatPersonaEdit;
+    private static Godot.TextEdit? _chatMemoryEdit;
+    private static Godot.PanelContainer? _personaPopup;
+    private static Godot.Button? _personaButton;
+    private static Godot.Label? _apiSummaryLabel;
+    private static Godot.Button? _apiToggleButton;
+    private static bool _apiExpanded;
     private static bool _chatBusy;
     private static string _chatDisplay = "";
     private static long _chatDisplayUntilMs;
@@ -732,7 +737,9 @@ public static partial class CompanionMod
                 if (_loadingAiCfg) return;
                 _useApiBrain = _aiModeOption.Selected == 1;
                 ReadApiFieldsFromUi();
+                _apiExpanded = _useApiBrain && !ChatModelConfigured();
                 UpdateApiBoxVisibility();
+                UpdateApiSummary();
                 SaveAiConfig();
             };
             aiRow.AddChild(aiLabel);
@@ -801,21 +808,7 @@ public static partial class CompanionMod
                 PlaceholderText = "模型，例如 gpt-4o-mini / deepseek-chat",
                 CustomMinimumSize = new Godot.Vector2(0, 30),
             };
-            _chatPersonaEdit = new Godot.LineEdit
-            {
-                PlaceholderText = "调教 / 角色设定（可选）",
-                CustomMinimumSize = new Godot.Vector2(0, 30),
-            };
-            _chatMemoryEdit = new Godot.LineEdit
-            {
-                PlaceholderText = "长期记忆（可选，会发给模型）",
-                CustomMinimumSize = new Godot.Vector2(0, 30),
-            };
-            foreach (var edit in new[]
-                     {
-                         _apiBaseEdit, _apiKeyEdit, _apiModelEdit,
-                         _chatPersonaEdit, _chatMemoryEdit
-                     })
+            foreach (var edit in new[] { _apiBaseEdit, _apiKeyEdit, _apiModelEdit })
             {
                 edit.AddThemeFontSizeOverride("font_size", 12);
                 _apiBox.AddChild(edit);
@@ -832,9 +825,62 @@ public static partial class CompanionMod
             {
                 ReadApiFieldsFromUi();
                 SaveAiConfig();
+                _apiExpanded = false;
+                UpdateApiBoxVisibility();
+                UpdateApiSummary();
             };
             _apiBox.AddChild(apiSave);
             _apiSaveButton = apiSave;
+
+            var apiToolsRow = new Godot.HBoxContainer
+            {
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+            };
+            apiToolsRow.AddThemeConstantOverride("separation", 6);
+
+            _apiSummaryLabel = new Godot.Label
+            {
+                Text = "",
+                VerticalAlignment = Godot.VerticalAlignment.Center,
+                SizeFlagsHorizontal = Godot.Control.SizeFlags.ExpandFill,
+                MouseFilter = Godot.Control.MouseFilterEnum.Ignore,
+            };
+            _apiSummaryLabel.AddThemeFontSizeOverride("font_size", 11);
+            _apiSummaryLabel.AddThemeColorOverride("font_color", new Godot.Color(0.72f, 0.70f, 0.76f));
+            apiToolsRow.AddChild(_apiSummaryLabel);
+
+            _apiToggleButton = new Godot.Button
+            {
+                Text = "模型设置",
+                CustomMinimumSize = new Godot.Vector2(92, 28),
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+            };
+            _apiToggleButton.AddThemeFontSizeOverride("font_size", 11);
+            _apiToggleButton.Pressed += () =>
+            {
+                _apiExpanded = !_apiExpanded;
+                UpdateApiBoxVisibility();
+                UpdateApiSummary();
+            };
+            apiToolsRow.AddChild(_apiToggleButton);
+
+            _personaButton = new Godot.Button
+            {
+                Text = "角色设定 / 记忆",
+                CustomMinimumSize = new Godot.Vector2(112, 28),
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+            };
+            _personaButton.AddThemeFontSizeOverride("font_size", 11);
+            _personaButton.Pressed += () =>
+            {
+                if (_personaPopup != null)
+                {
+                    if (_chatPersonaEdit != null) _chatPersonaEdit.Text = _chatPersona;
+                    if (_chatMemoryEdit != null) _chatMemoryEdit.Text = _chatMemory;
+                    _personaPopup.Visible = true;
+                }
+            };
+            apiToolsRow.AddChild(_personaButton);
 
             var closePanel = new Godot.Button
             {
@@ -855,10 +901,118 @@ public static partial class CompanionMod
             vbox.AddChild(aiRow);
             vbox.AddChild(langRow);
             vbox.AddChild(_apiBox);
+            vbox.AddChild(apiToolsRow);
             vbox.AddChild(_body);
             vbox.AddChild(_input);
             vbox.AddChild(closePanel);
             panel.AddChild(vbox);
+
+            _personaPopup = new Godot.PanelContainer
+            {
+                Visible = false,
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+                ZIndex = 200,
+            };
+            _personaPopup.AnchorLeft = 0.5f;
+            _personaPopup.AnchorRight = 0.5f;
+            _personaPopup.AnchorTop = 0.5f;
+            _personaPopup.AnchorBottom = 0.5f;
+            _personaPopup.OffsetLeft = -260f;
+            _personaPopup.OffsetRight = 260f;
+            _personaPopup.OffsetTop = -190f;
+            _personaPopup.OffsetBottom = 190f;
+
+            var popupStyle = new Godot.StyleBoxFlat
+            {
+                BgColor = new Godot.Color(0.07f, 0.065f, 0.09f, 0.98f),
+                BorderColor = new Godot.Color(0.95f, 0.76f, 0.31f, 0.65f),
+            };
+            popupStyle.SetCornerRadiusAll(10);
+            popupStyle.SetBorderWidthAll(1);
+            popupStyle.SetContentMarginAll(14);
+            _personaPopup.AddThemeStyleboxOverride("panel", popupStyle);
+
+            var popupBox = new Godot.VBoxContainer
+            {
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+            };
+            popupBox.AddThemeConstantOverride("separation", 8);
+
+            var personaTitle = new Godot.Label
+            {
+                Text = "角色设定 / 调教",
+                MouseFilter = Godot.Control.MouseFilterEnum.Ignore,
+            };
+            personaTitle.AddThemeFontSizeOverride("font_size", 14);
+            personaTitle.AddThemeColorOverride("font_color", new Godot.Color(0.95f, 0.76f, 0.31f));
+            popupBox.AddChild(personaTitle);
+
+            _chatPersonaEdit = new Godot.TextEdit
+            {
+                PlaceholderText = "例如：说话简短，像队友；不要替我做决定",
+                CustomMinimumSize = new Godot.Vector2(0, 82),
+                WrapMode = Godot.TextEdit.LineWrappingMode.Boundary,
+            };
+            _chatPersonaEdit.AddThemeFontSizeOverride("font_size", 12);
+            popupBox.AddChild(_chatPersonaEdit);
+
+            var memoryTitle = new Godot.Label
+            {
+                Text = "长期记忆",
+                MouseFilter = Godot.Control.MouseFilterEnum.Ignore,
+            };
+            memoryTitle.AddThemeFontSizeOverride("font_size", 14);
+            memoryTitle.AddThemeColorOverride("font_color", new Godot.Color(0.95f, 0.76f, 0.31f));
+            popupBox.AddChild(memoryTitle);
+
+            _chatMemoryEdit = new Godot.TextEdit
+            {
+                PlaceholderText = "例如：我的角色是五条悟；优先打精英；不要乱买药水",
+                CustomMinimumSize = new Godot.Vector2(0, 82),
+                WrapMode = Godot.TextEdit.LineWrappingMode.Boundary,
+            };
+            _chatMemoryEdit.AddThemeFontSizeOverride("font_size", 12);
+            popupBox.AddChild(_chatMemoryEdit);
+
+            var popupButtons = new Godot.HBoxContainer
+            {
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+            };
+            popupButtons.AddThemeConstantOverride("separation", 8);
+
+            var popupSave = new Godot.Button
+            {
+                Text = "保存并关闭",
+                SizeFlagsHorizontal = Godot.Control.SizeFlags.ExpandFill,
+                CustomMinimumSize = new Godot.Vector2(0, 32),
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+            };
+            popupSave.AddThemeFontSizeOverride("font_size", 12);
+            popupSave.Pressed += () =>
+            {
+                _chatPersona = _chatPersonaEdit?.Text.Trim() ?? "";
+                _chatMemory = _chatMemoryEdit?.Text.Trim() ?? "";
+                SaveAiConfig();
+                if (_personaPopup != null) _personaPopup.Visible = false;
+            };
+            popupButtons.AddChild(popupSave);
+
+            var popupClose = new Godot.Button
+            {
+                Text = "取消",
+                SizeFlagsHorizontal = Godot.Control.SizeFlags.ExpandFill,
+                CustomMinimumSize = new Godot.Vector2(0, 32),
+                MouseFilter = Godot.Control.MouseFilterEnum.Stop,
+            };
+            popupClose.AddThemeFontSizeOverride("font_size", 12);
+            popupClose.Pressed += () =>
+            {
+                if (_personaPopup != null) _personaPopup.Visible = false;
+            };
+            popupButtons.AddChild(popupClose);
+            popupBox.AddChild(popupButtons);
+            _personaPopup.AddChild(popupBox);
+            layer.AddChild(_personaPopup);
 
             ApplyAiConfigToUi();
 
@@ -1515,7 +1669,9 @@ public static partial class CompanionMod
             if (_chatPersonaEdit != null) _chatPersonaEdit.Text = _chatPersona;
             if (_chatMemoryEdit != null) _chatMemoryEdit.Text = _chatMemory;
             if (_langOption != null) _langOption.Selected = _langMode;
+            _apiExpanded = _useApiBrain && !ChatModelConfigured();
             UpdateApiBoxVisibility();
+            UpdateApiSummary();
             ApplyLanguageToUi();
         }
         finally
@@ -1526,7 +1682,38 @@ public static partial class CompanionMod
 
     private static void UpdateApiBoxVisibility()
     {
-        if (_apiBox != null) _apiBox.Visible = _useApiBrain;
+        if (_apiBox != null) _apiBox.Visible = _useApiBrain && _apiExpanded;
+        if (_apiToggleButton != null) _apiToggleButton.Visible = _useApiBrain;
+        if (_personaButton != null) _personaButton.Visible = _useApiBrain;
+        if (_apiSummaryLabel != null) _apiSummaryLabel.Visible = _useApiBrain && !_apiExpanded;
+    }
+
+    private static void UpdateApiSummary()
+    {
+        if (_apiSummaryLabel == null) return;
+        if (!_useApiBrain)
+        {
+            _apiSummaryLabel.Text = "";
+        }
+        else if (ChatModelConfigured())
+        {
+            _apiSummaryLabel.Text = Tr($"已连接：{_apiModel}", $"Connected: {_apiModel}");
+        }
+        else
+        {
+            _apiSummaryLabel.Text = Tr("API 未配置", "API not configured");
+        }
+
+        if (_apiToggleButton != null)
+        {
+            _apiToggleButton.Text = _apiExpanded
+                ? Tr("收起设置", "Collapse")
+                : Tr("模型设置", "Model settings");
+        }
+        if (_personaButton != null)
+        {
+            _personaButton.Text = Tr("角色设定 / 记忆", "Persona / Memory");
+        }
     }
 
     private static void OpenAiSettingsPanel()
@@ -1607,6 +1794,17 @@ public static partial class CompanionMod
                 var label = menuText.label ?? FindNode<Godot.Label>(menuText);
                 if (label != null) label.Text = Tr("和 AI 玩", "Play with AI");
             }
+            if (_apiToggleButton != null)
+            {
+                _apiToggleButton.Text = _apiExpanded
+                    ? Tr("收起设置", "Collapse")
+                    : Tr("模型设置", "Model settings");
+            }
+            if (_personaButton != null)
+            {
+                _personaButton.Text = Tr("角色设定 / 记忆", "Persona / Memory");
+            }
+            UpdateApiSummary();
             _uiState = ""; // 让 RefreshUi 重新生成状态摘要
         }
         catch (Exception ex)
