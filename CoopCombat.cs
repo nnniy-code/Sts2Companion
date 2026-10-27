@@ -186,7 +186,16 @@ public static partial class CompanionMod
 
             if (_downedNetIds.Contains(dead.NetId))
             {
-                LogError($"coop-death: net{dead.NetId} 已 downed，再次死亡 → 真正死亡");
+                // 只要还有别的活人，downed 继续锁 1 HP，不算真正死亡。
+                LogError($"coop-death: net{dead.NetId} downed 再次受致命伤 → 锁回 1 HP");
+                try
+                {
+                    creature.SetCurrentHpInternal(1);
+                }
+                catch (Exception ex)
+                {
+                    LogError($"coop-death: net{dead.NetId} 锁血失败: {ex.Message}");
+                }
                 return;
             }
 
@@ -232,6 +241,48 @@ public static partial class CompanionMod
             {
                 _allDeadLogged = true;
                 LogError("coop-death: 全员阵亡 → 让游戏正常失败，不复活");
+            }
+
+            // 如果所有活人都 downed，没人能行动，会软锁；释放一个出来行动。
+            var alivePlayersNow = players
+                .Where(p => Safe(() => p.Creature?.IsAlive ?? false, false))
+                .ToList();
+            if (alivePlayersNow.Count > 0
+                && alivePlayersNow.All(p => _downedNetIds.Contains(p.NetId)))
+            {
+                var release = alivePlayersNow[alivePlayersNow.Count - 1];
+                _downedNetIds.Remove(release.NetId);
+                LogError($"coop-death: 全员 downed → 释放 net{release.NetId} 行动，避免软锁");
+            }
+
+            // downed 锁血：只要场上还有别的活人，就把 downed 玩家锁在 1 HP。
+            // 只剩最后一个 downed 时解除锁血，让他可以正常被打死，最终全员阵亡。
+            foreach (ulong netId in _downedNetIds.ToList())
+            {
+                var downed = players.FirstOrDefault(p => p.NetId == netId);
+                if (downed?.Creature == null) continue;
+
+                bool anyOtherAlive = players.Any(p => p.NetId != netId
+                                                       && Safe(() => p.Creature?.IsAlive ?? false, false));
+                if (!anyOtherAlive)
+                {
+                    _downedNetIds.Remove(netId);
+                    LogError($"coop-death: net{netId} 是最后一个 downed → 解除锁血");
+                    continue;
+                }
+
+                if (Safe(() => downed.Creature.CurrentHp, 1) < 1)
+                {
+                    try
+                    {
+                        downed.Creature.SetCurrentHpInternal(1);
+                        LogError($"coop-death: net{netId} downed 锁血 → 1 HP");
+                    }
+                    catch (Exception ex)
+                    {
+                        LogError($"coop-death: net{netId} 锁血失败: {ex.Message}");
+                    }
+                }
             }
 
             bool aboutToLose = Safe(() => CombatManager.Instance.IsAboutToLose, false);
