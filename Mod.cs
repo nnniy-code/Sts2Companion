@@ -1473,6 +1473,7 @@ public static partial class CompanionMod
             PollCoopCharacterFlow();
             EnsureCharacterOptions();
 
+            TryRestoreCoopMode();
             if (_aiMode) PollCoopAI();
         }
     }
@@ -2534,6 +2535,46 @@ public static partial class CompanionMod
     ///   2. 地图房间 → 本地玩家先投票；AI 跟票；由游戏自己走旅行流程（CoopAI.cs）
     ///   3. 战斗场景 → AI 回合自动出牌 + EndTurn
     /// </summary>
+    private static long _coopRestoreCheckMs;
+
+    /// <summary>
+    /// 保存退出到主菜单再「继续游戏」后，旧的 _aiMode 会被清掉，
+    /// 结果 API 和 AI 都不再驱动。这里靠 coop_run.json + 多人 RunState 恢复。
+    /// </summary>
+    private static void TryRestoreCoopMode()
+    {
+        if (_aiMode) return;
+        if (!Safe(() => RunManager.Instance.IsInProgress, false)) return;
+
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (now - _coopRestoreCheckMs < 1000) return;
+        _coopRestoreCheckMs = now;
+
+        try
+        {
+            var runState = Safe(() => RunManager.Instance.DebugOnlyGetState(), (RunState?)null);
+            if (runState == null || runState.Players.Count < 2) return;
+
+            string dir = Path.GetDirectoryName(_outFile!) ?? ".";
+            string marker = Path.Combine(dir, "coop_run.json");
+            if (!File.Exists(marker)) return;
+
+            using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(marker));
+            if (!doc.RootElement.TryGetProperty("coop", out var coopEl)
+                || !coopEl.GetBoolean())
+            {
+                return;
+            }
+
+            _aiMode = true;
+            LogError($"coop: 从存档恢复 AI 模式（players={runState.Players.Count}）");
+        }
+        catch (Exception ex)
+        {
+            LogError("coop: 恢复 AI 模式失败: " + ex.Message);
+        }
+    }
+
     private static void PollCoopAI()
     {
         // PollCoopAI 的驱动点全是 Godot 回调（ProcessFrame 信号 / Node._Process），
