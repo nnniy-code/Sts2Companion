@@ -88,6 +88,7 @@ public static partial class CompanionMod
     private static bool _evAdvanced;
     private static bool _evForcedProceedLogged;
     private static long _evLastForceMs;
+    private static long _evMapBlockUntilMs;
     private static int _evRoomChoices;
     private static int _evProceedRetries;
     private static long _evAdvancedMs;
@@ -135,6 +136,7 @@ public static partial class CompanionMod
             _evAdvanced = false;
             _evForcedProceedLogged = false;
             _evLastForceMs = 0;
+            _evMapBlockUntilMs = 0;
             _evRoomChoices = 0;
             _evProceedRetries = 0;
             _evZombieLogged = false;
@@ -183,6 +185,8 @@ public static partial class CompanionMod
         else if (_evLocalDoneMs == 0)
         {
             _evLocalDoneMs = eventNowMs;
+            // 本地选完后给游戏留出关闭事件界面/加载下一房间的时间，避免地图抢跑。
+            if (_evMapBlockUntilMs == 0) _evMapBlockUntilMs = eventNowMs + 4000;
         }
 
         // 某些事件（例如 WHISPERING_HOLLOW）的 AI 事件会因为卡牌/遗物子界面一直没有 IsFinished，
@@ -205,6 +209,7 @@ public static partial class CompanionMod
                     var task = NEventRoom.Proceed();
                     _evAdvanced = true;
                     _evAdvancedMs = eventNowMs;
+                    _evMapBlockUntilMs = eventNowMs + 4000;
                     if (task != null)
                     {
                         _ = task.ContinueWith(
@@ -511,6 +516,7 @@ public static partial class CompanionMod
 
         _evAdvanced = true;
         _evAdvancedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        _evMapBlockUntilMs = _evAdvancedMs + 4000;
         try
         {
             var task = NEventRoom.Proceed();
@@ -893,6 +899,16 @@ public static partial class CompanionMod
         // 导致这里一次都没跑到过（日志里完全没有 coop-map 就是这个原因）。
         var screen = NMapScreen.Instance;
         if (screen == null || !screen.IsOpen) return;
+
+        // 事件结束后游戏会先回到地图，再真正进入下一个房间。
+        // 如果这里立刻自动旅行，头像会在地图上往前走，但房间场景没加载，表现就是"不进入关卡"。
+        long mapNowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (runState.CurrentRoom is EventRoom)
+        {
+            if (mapNowMs < _evMapBlockUntilMs) return;
+            var eventUi = NEventRoom.Instance;
+            if (eventUi != null && eventUi.Visible) return;
+        }
 
         var local = CoopLocalPlayer(runState);
         var ais = CoopAiPlayers(runState);
