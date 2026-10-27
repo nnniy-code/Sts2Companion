@@ -55,6 +55,7 @@ public static partial class CompanionMod
     private static bool _aboutToLoseLogged;
     private static CombatState? _deathHookState;
     private static readonly HashSet<ulong> _downedNetIds = new();
+    private static readonly Dictionary<ulong, int> _downedMaxHp = new();
     private static readonly HttpClient CoopApiHttp = new() { Timeout = TimeSpan.FromSeconds(12) };
 
 
@@ -144,6 +145,20 @@ public static partial class CompanionMod
             {
                 LogError("coop-death: 战斗胜利，清除 downed 状态: "
                          + string.Join(",", _downedNetIds));
+                foreach (ulong netId in _downedNetIds)
+                {
+                    var p = runState.Players.FirstOrDefault(x => x.NetId == netId);
+                    if (p?.Creature == null) continue;
+                    if (_downedMaxHp.Remove(netId, out int originalMax))
+                    {
+                        try { p.Creature.SetMaxHpInternal(originalMax); }
+                        catch { }
+                    }
+                    if (p.Creature.CombatState is CombatState csWin)
+                    {
+                        SetDownedTargetable(csWin, p.Creature, true);
+                    }
+                }
                 _downedNetIds.Clear();
             }
         }
@@ -158,12 +173,59 @@ public static partial class CompanionMod
         if (ReferenceEquals(_deathHookState, cs)) return;
         _deathHookState = cs;
         _downedNetIds.Clear();
+        _downedMaxHp.Clear();
         foreach (var p in cs.Players)
         {
             if (p?.Creature == null) continue;
             p.Creature.Died += OnPlayerCreatureDied;
         }
         LogError("coop-death: 已订阅每个玩家的 Creature.Died");
+    }
+
+    private static List<Creature>? CombatAllies(CombatState cs)
+    {
+        try
+        {
+            var field = typeof(CombatState).GetField(
+                "_allies", BindingFlags.Instance | BindingFlags.NonPublic);
+            return field?.GetValue(cs) as List<Creature>;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void SetDownedTargetable(CombatState cs, Creature creature, bool targetable)
+    {
+        var allies = CombatAllies(cs);
+        if (allies == null) return;
+        bool changed = targetable ? !allies.Contains(creature) : allies.Contains(creature);
+        if (targetable) { if (!allies.Contains(creature)) allies.Add(creature); }
+        else allies.Remove(creature);
+        if (changed)
+        {
+            LogError($"coop-death: {creature.LogName} 可被攻击={targetable}");
+        }
+    }
+
+    private static void LockDownedMaxHp(Creature creature, ulong netId)
+    {
+        if (creature == null) return;
+        int saved = _downedMaxHp.TryGetValue(netId, out int hp) ? hp : creature.MaxHp;
+        _downedMaxHp[netId] = saved;
+        if (creature.MaxHp != saved)
+        {
+            try
+            {
+                creature.SetMaxHpInternal(saved);
+                LogError($"coop-death: net{netId} 最大生命锁回 {saved}");
+            }
+            catch (Exception ex)
+            {
+                LogError($"coop-death: net{netId} 最大生命锁定失败: {ex.Message}");
+            }
+        }
     }
 
     private static void OnPlayerCreatureDied(Creature creature)
@@ -200,6 +262,11 @@ public static partial class CompanionMod
             }
 
             _downedNetIds.Add(dead.NetId);
+            _downedMaxHp[dead.NetId] = Safe(() => creature.MaxHp, 1);
+            if (creature.CombatState is CombatState combatState)
+            {
+                SetDownedTargetable(combatState, creature, false);
+            }
             LogError($"coop-death: net{dead.NetId} 死亡，但还有队友 → downed，临时 1 HP");
             try
             {
@@ -252,6 +319,15 @@ public static partial class CompanionMod
             {
                 var release = alivePlayersNow[alivePlayersNow.Count - 1];
                 _downedNetIds.Remove(release.NetId);
+                if (_downedMaxHp.Remove(release.NetId, out int releaseMax))
+                {
+                    try { release.Creature.SetMaxHpInternal(releaseMax); }
+                    catch { }
+                }
+                if (release.Creature.CombatState is CombatState csReleaseAll)
+                {
+                    SetDownedTargetable(csReleaseAll, release.Creature, true);
+                }
                 LogError($"coop-death: 全员 downed → 释放 net{release.NetId} 行动，避免软锁");
             }
 
@@ -267,8 +343,23 @@ public static partial class CompanionMod
                 if (!anyOtherAlive)
                 {
                     _downedNetIds.Remove(netId);
+                    if (_downedMaxHp.Remove(netId, out int originalMax))
+                    {
+                        try { downed.Creature.SetMaxHpInternal(originalMax); }
+                        catch { }
+                    }
+                    if (downed.Creature.CombatState is CombatState csRelease)
+                    {
+                        SetDownedTargetable(csRelease, downed.Creature, true);
+                    }
                     LogError($"coop-death: net{netId} 是最后一个 downed → 解除锁血");
                     continue;
+                }
+
+                LockDownedMaxHp(downed.Creature, netId);
+                if (downed.Creature.CombatState is CombatState csDowned)
+                {
+                    SetDownedTargetable(csDowned, downed.Creature, false);
                 }
 
                 if (Safe(() => downed.Creature.CurrentHp, 1) < 1)

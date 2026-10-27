@@ -1411,7 +1411,7 @@ public static partial class CompanionMod
         {
             _testBuildLogged = true;
             LogError("coop: ===============================================");
-            LogError("coop: TEST BUILD any-alive v6 已加载");
+            LogError("coop: TEST BUILD any-alive v7 已加载");
             LogError("coop: 这是私人测试版，不是公共稳定版");
             LogError("coop: ===============================================");
         }
@@ -1420,7 +1420,7 @@ public static partial class CompanionMod
         if (testBeatNow - _lastTestHeartbeatMs > 15000)
         {
             _lastTestHeartbeatMs = testBeatNow;
-            LogError("coop: TEST BUILD v6 heartbeat（测试版仍在运行）");
+            LogError("coop: TEST BUILD v7 heartbeat（测试版仍在运行）");
         }
 
         // 确保 KeyWatcher 存在（场景切换可能丢）
