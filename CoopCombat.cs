@@ -284,6 +284,19 @@ public static partial class CompanionMod
         }
     }
 
+    internal static bool IsDowned(Creature creature)
+    {
+        try
+        {
+            var player = creature?.Player;
+            return player != null && _downedNetIds.Contains(player.NetId);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static void CoopDeathTick(RunState runState)
     {
         try
