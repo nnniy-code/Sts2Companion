@@ -82,6 +82,7 @@ public static partial class CompanionMod
     private static Godot.LineEdit? _input;
     private static bool _panelForce;
     private static bool _panelMinimized;
+    private static bool _testBuildLogged;
     private static Godot.HBoxContainer? _aiRow;
     private static Godot.HBoxContainer? _langRow;
     private static Godot.HBoxContainer? _apiToolsRow;
@@ -1405,6 +1406,12 @@ public static partial class CompanionMod
     /// </summary>
     private static void OnTreeProcessed()
     {
+        if (!_testBuildLogged)
+        {
+            _testBuildLogged = true;
+            LogError("coop: TEST BUILD any-alive v3 已加载（176640+）");
+        }
+
         // 确保 KeyWatcher 存在（场景切换可能丢）
         EnsureKeyWatcherAlive_Quiet();
 
