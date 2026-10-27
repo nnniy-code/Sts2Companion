@@ -57,6 +57,7 @@ public static partial class CompanionMod
     private static readonly HashSet<ulong> _downedNetIds = new();
     private static readonly Dictionary<ulong, int> _downedMaxHp = new();
     private static string _lastRoomKey = "";
+    private static RunState? _lastRunState;
     private static readonly HttpClient CoopApiHttp = new() { Timeout = TimeSpan.FromSeconds(12) };
 
 
@@ -269,6 +270,16 @@ public static partial class CompanionMod
 
             _downedNetIds.Add(dead.NetId);
             _downedMaxHp[dead.NetId] = Safe(() => creature.MaxHp, 1);
+            try
+            {
+                var removedPowers = creature.RemoveAllPowersAfterDeath()?.ToList();
+                LogError($"coop-death: net{dead.NetId} downed 清除状态 "
+                         + $"{removedPowers?.Count ?? 0} 个");
+            }
+            catch (Exception ex)
+            {
+                LogError($"coop-death: net{dead.NetId} 清除状态失败: {ex.Message}");
+            }
             if (creature.CombatState is CombatState combatState)
             {
                 SetDownedTargetable(combatState, creature, false);
@@ -347,6 +358,18 @@ public static partial class CompanionMod
 
         _downedNetIds.Clear();
         _downedMaxHp.Clear();
+    }
+
+    private static void CoopRunResetTick(RunState runState)
+    {
+        if (ReferenceEquals(_lastRunState, runState)) return;
+        _lastRunState = runState;
+        _downedNetIds.Clear();
+        _downedMaxHp.Clear();
+        _lastRoomKey = "";
+        _lastAliveMask = -1;
+        _allDeadLogged = false;
+        LogError("coop-downed-clear: 新 Run，丢弃上一局 downed 状态");
     }
 
     private static void CoopRoomEndTick(RunState runState)
