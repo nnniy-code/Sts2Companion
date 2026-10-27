@@ -155,9 +155,17 @@ public static partial class CompanionMod
 
         var aiEvents = new Dictionary<ulong, EventModel?>();
         bool allAiDone = true;
+        string localEventId = Safe(() => localEvent.Id.Entry, "");
         foreach (var ai in ais)
         {
             var ev = CoopEventFor(sync, ai);
+            if (ev != null && !ev.IsFinished && localEventId.Length > 0
+                && !string.Equals(Safe(() => ev.Id.Entry, ""), localEventId,
+                                  StringComparison.OrdinalIgnoreCase))
+            {
+                ForceFinishAiEvent(ev, $"本地已进入新事件 {localEventId}，旧 AI 事件残留");
+            }
+
             aiEvents[ai.NetId] = ev;
             if (ev == null) allAiDone = false;
             else if (!ev.IsFinished) allAiDone = false;
@@ -203,6 +211,11 @@ public static partial class CompanionMod
 
             try
             {
+                foreach (var pair in aiEvents)
+                {
+                    ForceFinishAiEvent(pair.Value, "事件超时，跳过 AI 剩余子界面");
+                }
+
                 if (NEventRoom.Instance != null)
                 {
                     _evLastForceMs = eventNowMs;
@@ -295,6 +308,37 @@ public static partial class CompanionMod
             _evProceedRetries++;
             _evAdvanced = false;
             LogError($"coop-event: Proceed 8 秒未生效，重试（第 {_evProceedRetries} 次）");
+        }
+    }
+
+    /// <summary>
+    /// 某些事件（SelfHelpBook 的 READ_THE_BACK 等）在单人档会抛
+    /// "Cannot wait for remote choice in singleplayer!"，AI 那份事件永远不结束。
+    /// 旧事件拖到新事件开始时，游戏会警告并导致地图/转场错乱，
+    /// 所以这里把 AI 那份强制标记为完成，只跳过 AI 的奖励，不阻塞本地。
+    /// </summary>
+    private static void ForceFinishAiEvent(EventModel? ev, string reason)
+    {
+        if (ev == null || ev.IsFinished) return;
+
+        try
+        {
+            string id = Safe(() => ev.Id.Entry, "?");
+            var clear = typeof(EventModel).GetMethod(
+                "ClearCurrentOptions",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            clear?.Invoke(ev, null);
+
+            var finished = typeof(EventModel).GetProperty(
+                "IsFinished",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            finished?.SetValue(ev, true);
+
+            LogError($"coop-event: 强制结束 AI 事件 {id}（{reason}）");
+        }
+        catch (Exception ex)
+        {
+            LogError("coop-event: 强制结束 AI 事件失败: " + (ex.InnerException ?? ex).Message);
         }
     }
 
@@ -496,10 +540,20 @@ public static partial class CompanionMod
             // "已经结束"说明这次选择本来就完成了，不是失败
             if (inner.Message.Contains("finish", StringComparison.OrdinalIgnoreCase)) return true;
             LogError($"coop-event: AI{ai.NetId} 选崩 index={index}: {inner.Message}");
+            if (inner.Message.Contains("remote choice", StringComparison.OrdinalIgnoreCase))
+            {
+                ForceFinishAiEvent(aiEvent, "单人档不支持该事件的远程选牌");
+                return true;
+            }
         }
         catch (Exception ex)
         {
             LogError($"coop-event: AI{ai.NetId} 选崩 index={index}: {ex.Message}");
+            if (ex.Message.Contains("remote choice", StringComparison.OrdinalIgnoreCase))
+            {
+                ForceFinishAiEvent(aiEvent, "单人档不支持该事件的远程选牌");
+                return true;
+            }
         }
         return false;
     }
