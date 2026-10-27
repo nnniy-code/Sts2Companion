@@ -18,6 +18,7 @@ using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.Map;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.MonsterMoves.Intents;
+using MegaCrit.Sts2.Core.Nodes.Vfx;
 using MegaCrit.Sts2.Core.Multiplayer.Game;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
 using MegaCrit.Sts2.Core.Rewards;
@@ -60,6 +61,8 @@ public static partial class CompanionMod
     private static RunState? _lastRunState;
     private static ulong _lastStandNetId;
     private static bool _forceAllDead;
+    private static Queue<string>? _lastStandLines;
+    private static long _lastStandLineAtMs;
     private static readonly HttpClient CoopApiHttp = new() { Timeout = TimeSpan.FromSeconds(12) };
 
 
@@ -165,6 +168,8 @@ public static partial class CompanionMod
                 }
                 _downedNetIds.Clear();
                 _lastStandNetId = 0;
+                _lastStandLines = null;
+                _lastStandLineAtMs = 0;
             }
         }
         catch (Exception ex)
@@ -245,6 +250,8 @@ public static partial class CompanionMod
         _downedNetIds.Clear();
         _downedMaxHp.Clear();
         _lastStandNetId = 0;
+        _lastStandLines = null;
+        _lastStandLineAtMs = 0;
         LogError($"coop-death: {reason} → 强制所有玩家真正死亡");
 
         foreach (var player in runState.Players.ToList())
@@ -400,6 +407,8 @@ public static partial class CompanionMod
         _downedNetIds.Clear();
         _downedMaxHp.Clear();
         _lastStandNetId = 0;
+        _lastStandLines = null;
+        _lastStandLineAtMs = 0;
     }
 
     private static bool _roomHooksInstalled;
@@ -452,6 +461,8 @@ public static partial class CompanionMod
         _allDeadLogged = false;
         _lastStandNetId = 0;
         _forceAllDead = false;
+        _lastStandLines = null;
+        _lastStandLineAtMs = 0;
         LogError("coop-downed-clear: 新 Run，丢弃上一局 downed 状态");
     }
 
@@ -473,6 +484,39 @@ public static partial class CompanionMod
         {
             LogError("coop-downed-clear: room tick: " + ex.Message);
         }
+    }
+
+    private static void CoopLastStandLineTick(RunState runState)
+    {
+        if (_lastStandLines == null || _lastStandLines.Count == 0) return;
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (now < _lastStandLineAtMs) return;
+
+        string line = _lastStandLines.Dequeue();
+        _lastStandLineAtMs = now + 2200;
+        var speaker = runState.Players.FirstOrDefault(p => p.NetId == _lastStandNetId);
+        var creature = speaker?.Creature;
+        LogError($"coop-laststand: net{_lastStandNetId} 台词：{line}");
+
+        try
+        {
+            if (creature != null && creature.IsAlive)
+            {
+                var bubble = NSpeechBubbleVfx.Create(line, creature, 3.0, VfxColor.Gold);
+                var container = creature.GetVfxContainer();
+                if (bubble != null && container != null)
+                {
+                    container.AddChild(bubble);
+                    return;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LogError("coop-laststand: 气泡失败: " + ex.Message);
+        }
+
+        ShowChatMessage($"角色1：{line}");
     }
 
     private static void CoopDeathTick(RunState runState)
@@ -508,10 +552,18 @@ public static partial class CompanionMod
             if (alivePlayersNow.Count > 0
                 && alivePlayersNow.All(p => _downedNetIds.Contains(p.NetId)))
             {
-                var release = alivePlayersNow[alivePlayersNow.Count - 1];
+                var release = alivePlayersNow.FirstOrDefault(p => p.NetId == 1uL)
+                              ?? alivePlayersNow[alivePlayersNow.Count - 1];
                 _downedNetIds.Remove(release.NetId);
                 _lastStandNetId = release.NetId;
                 try { release.Creature.SetCurrentHpInternal(1); } catch { }
+
+                _lastStandLineAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 700;
+                _lastStandLines = new Queue<string>(new[]
+                {
+                    "背负着伙伴和家人的期望，我不能输",
+                    "三气归来"
+                });
                 if (_downedMaxHp.Remove(release.NetId, out int releaseMax))
                 {
                     try { release.Creature.SetMaxHpInternal(releaseMax); }
