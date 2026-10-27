@@ -58,9 +58,16 @@ public static partial class CompanionMod
                 return;
             }
 
-            // 已经进入房间/事件后必须把临时选择器卸掉，
-            // 否则它会抢答本地的事件选牌。
-            if (runState.CurrentRoom != null)
+            // 事件本身已经结束（没有选项）时，也可能残留 1~2 个 AI 选牌请求。
+            // 这时房间仍然是 EventRoom，不能只用 CurrentRoom == null 判断。
+            var localEvent = Safe(
+                () => RunManager.Instance?.EventSynchronizer?.GetLocalEvent(),
+                (EventModel?)null);
+            bool eventFinished = localEvent != null && localEvent.IsFinished;
+            bool canClean = runState.CurrentRoom == null
+                            || (runState.CurrentRoom is EventRoom && eventFinished);
+
+            if (!canClean)
             {
                 _staleChoiceSelector?.Dispose();
                 _staleChoiceSelector = null;
