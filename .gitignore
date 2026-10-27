@@ -8,3 +8,4 @@ tools/**/obj/
 *.bak
 *.bak_*
 *.log
+snapshots/
