@@ -83,6 +83,7 @@ public static partial class CompanionMod
     private static bool _panelForce;
     private static bool _panelMinimized;
     private static bool _testBuildLogged;
+    private static long _lastTestHeartbeatMs;
     private static Godot.HBoxContainer? _aiRow;
     private static Godot.HBoxContainer? _langRow;
     private static Godot.HBoxContainer? _apiToolsRow;
@@ -1409,7 +1410,17 @@ public static partial class CompanionMod
         if (!_testBuildLogged)
         {
             _testBuildLogged = true;
-            LogError("coop: TEST BUILD any-alive v3 已加载（176640+）");
+            LogError("coop: ===============================================");
+            LogError("coop: TEST BUILD any-alive v4 已加载");
+            LogError("coop: 这是私人测试版，不是公共稳定版");
+            LogError("coop: ===============================================");
+        }
+
+        long testBeatNow = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (testBeatNow - _lastTestHeartbeatMs > 15000)
+        {
+            _lastTestHeartbeatMs = testBeatNow;
+            LogError("coop: TEST BUILD v4 heartbeat（测试版仍在运行）");
         }
 
         // 确保 KeyWatcher 存在（场景切换可能丢）
@@ -1739,8 +1750,8 @@ public static partial class CompanionMod
         if (_head != null)
         {
             _head.Text = minimized
-                ? Tr("AI 对话", "AI chat")
-                : Tr("STS2 队友", "STS2 Companion");
+                ? Tr("AI 对话 [TEST]", "AI chat [TEST]")
+                : Tr("STS2 队友 [TEST]", "STS2 Companion [TEST]");
         }
         if (_panelCloseButton != null)
         {
@@ -1794,8 +1805,8 @@ public static partial class CompanionMod
             if (_head != null)
             {
                 _head.Text = _panelMinimized
-                    ? Tr("AI 对话", "AI chat")
-                    : Tr("STS2 队友", "STS2 Companion");
+                    ? Tr("AI 对话 [TEST]", "AI chat [TEST]")
+                    : Tr("STS2 队友 [TEST]", "STS2 Companion [TEST]");
             }
             if (_aiSourceLabel != null) _aiSourceLabel.Text = Tr("AI 来源", "AI source");
             if (_aiModeOption != null)
