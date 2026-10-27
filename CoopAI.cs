@@ -135,13 +135,10 @@ public static partial class CompanionMod
     private static long _evLastTryMs;
     private static long _evLocalDoneMs;
     private static readonly Dictionary<ulong, int> _evAiStartHp = new();
-    private static bool _evAdvanced;
     private static bool _evForcedProceedLogged;
     private static long _evLastForceMs;
     private static long _evMapBlockUntilMs;
     private static int _evRoomChoices;
-    private static int _evProceedRetries;
-    private static long _evAdvancedMs;
     private static bool _evZombieLogged;
     private static MethodInfo? _miChooseForEvent;
 
@@ -184,12 +181,10 @@ public static partial class CompanionMod
             _evLastTryMs = 0;
             _evLocalDoneMs = 0;
             _evAiStartHp.Clear();
-            _evAdvanced = false;
             _evForcedProceedLogged = false;
             _evLastForceMs = 0;
             _evMapBlockUntilMs = 0;
             _evRoomChoices = 0;
-            _evProceedRetries = 0;
             _evZombieLogged = false;
             LogError($"coop-event: 进入事件 shared={Safe(() => sync.IsShared, false)} "
                      + $"page={CoopEventPage(sync)} room={room.GetType().Name}");
@@ -259,44 +254,23 @@ public static partial class CompanionMod
             if (_evMapBlockUntilMs == 0) _evMapBlockUntilMs = eventNowMs + 1500;
         }
 
-        // 某些事件（例如 WHISPERING_HOLLOW）的 AI 事件会因为卡牌/遗物子界面一直没有 IsFinished，
-        // 本地已经选完却永远等不到 allAiDone。超过 4 秒就强制推进，避免整局卡死。
-        if (!_evAdvanced && localDone && !allAiDone && _evLocalDoneMs > 0
+        // 某些事件（例如 WHISPERING_HOLLOW）的 AI 事件会因为卡牌/遗物子界面一直没有 IsFinished。
+        // 超过 4 秒只结束 AI 那份事件，不替本地点“继续”——
+        // 自动 NEventRoom.Proceed() 会让事件房间没真正退出，打完第一关又回到先古房间。
+        if (localDone && !allAiDone && _evLocalDoneMs > 0
             && eventNowMs - _evLocalDoneMs > 4000
             && eventNowMs - _evLastForceMs > 2000)
         {
+            _evLastForceMs = eventNowMs;
             if (!_evForcedProceedLogged)
             {
                 _evForcedProceedLogged = true;
-                LogError("coop-event: 本地已选完但 AI 事件 4 秒未结束，强制推进（跳过 AI 的剩余子界面）");
+                LogError("coop-event: 本地已选完但 AI 事件 4 秒未结束，强制结束 AI 事件，等本地点继续");
             }
 
-            try
+            foreach (var pair in aiEvents)
             {
-                foreach (var pair in aiEvents)
-                {
-                    ForceFinishAiEvent(pair.Value, "事件超时，跳过 AI 剩余子界面");
-                }
-
-                if (NEventRoom.Instance != null)
-                {
-                    _evLastForceMs = eventNowMs;
-                    var task = NEventRoom.Proceed();
-                    _evAdvanced = true;
-                    _evAdvancedMs = eventNowMs;
-                    _evMapBlockUntilMs = eventNowMs + 4000;
-                    if (task != null)
-                    {
-                        _ = task.ContinueWith(
-                            t => LogError("coop-event: 强制 Proceed 异常: "
-                                          + (t.Exception?.InnerException?.Message ?? "?")),
-                            TaskContinuationOptions.OnlyOnFaulted);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                LogError("coop-event: 强制 Proceed 崩: " + ex.Message);
+                ForceFinishAiEvent(pair.Value, "事件超时，跳过 AI 剩余子界面");
             }
         }
 
@@ -306,7 +280,7 @@ public static partial class CompanionMod
         {
             if (allAiDone)
             {
-                if (!_evAdvanced) CoopProceed(localEvent, null);
+                // 不自动点“继续”：交还给本地玩家，保证事件房间正常退出。
                 return;
             }
 
@@ -359,17 +333,12 @@ public static partial class CompanionMod
             }
         }
 
-        // 所有人的事件都结束 → 推进；推进 8 秒没生效就重试（最多 3 次）。
-        if (!_evAdvanced && localDone && allAiDone)
+        // 所有人的事件都结束后，也由本地玩家点“继续”。
+        // 自动 NEventRoom.Proceed() 只打开地图，不真正退出事件房间；
+        // 之后打第一关会出现“又回到先古房间”的状态错乱。
+        if (localDone && allAiDone)
         {
-            CoopProceed(localEvent, null);
-        }
-        else if (_evAdvanced && _evProceedRetries < 3
-                 && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - _evAdvancedMs > 8000)
-        {
-            _evProceedRetries++;
-            _evAdvanced = false;
-            LogError($"coop-event: Proceed 8 秒未生效，重试（第 {_evProceedRetries} 次）");
+            // no-op：保留本地事件界面，让游戏自己的继续按钮完成房间切换。
         }
     }
 
@@ -618,38 +587,6 @@ public static partial class CompanionMod
             }
         }
         return false;
-    }
-
-    /// <summary>两人都选完 → 事件房间已显示 Proceed 时推进到下一间。</summary>
-    private static void CoopProceed(EventModel localEvent, EventModel? aiEvent)
-    {
-        // 事件还没结束，或 UI 还没刷出 Proceed 选项 → 下一帧再看
-        if (!localEvent.IsFinished) return;
-        if (!CoopHasProceedOption(localEvent)) return;
-
-        // NEventRoom.Proceed() 内部同步解引用 NMapScreen.Instance，转场瞬间它是 null
-        if (NMapScreen.Instance == null) return;
-
-        _evAdvanced = true;
-        _evAdvancedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        _evMapBlockUntilMs = _evAdvancedMs + 1500;
-        try
-        {
-            var task = NEventRoom.Proceed();
-            if (task != null)
-            {
-                _ = task.ContinueWith(
-                    t => LogError("coop-event: Proceed 异常: "
-                                  + (t.Exception?.InnerException?.Message ?? "?")),
-                    System.Threading.Tasks.TaskContinuationOptions.OnlyOnFaulted);
-            }
-            LogError("coop-event: 所有 AI 都选完 → NEventRoom.Proceed()");
-        }
-        catch (Exception ex)
-        {
-            _evAdvanced = false;
-            LogError($"coop-event: Proceed 崩: {ex.Message}");
-        }
     }
 
     // ---------- 休息点（篝火） ----------

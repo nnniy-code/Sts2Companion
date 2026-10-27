@@ -92,7 +92,6 @@ public static partial class CompanionMod
         _evForcedProceedLogged = false;
         _evLastForceMs = 0;
         _evRoomChoices = 0;
-        _evProceedRetries = 0;
         _evZombieLogged = false;
 
         _mapTravelStarted = false;
