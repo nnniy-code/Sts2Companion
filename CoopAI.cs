@@ -1197,26 +1197,20 @@ public static partial class CompanionMod
                 return;
             }
 
-            bool added = false;
-            try
-            {
-                added = runState.AddVisitedMapCoord(coord);
-            }
-            catch (Exception ex)
-            {
-                LogError("coop-map: AddVisitedMapCoord 失败: " + ex.Message);
-            }
-
-            int floor = coord.row + 1;   // EnterMapPointInternal 的 floor 是 1-based
-            var travelTask = RunManager.Instance.EnterMapPointInternal(floor, point.PointType, null, saveGame: false);
-            // 这是 fire-and-forget 的进房间流程；异步失败必须记下来，否则只会表现为"没反应"。
+            // 必须走游戏自己的 EnterMapCoord：
+            // 它会 AddVisitedMapCoord + EnterMapCoordInternal(..., saveGame:true)，
+            // 房间创建和 CurrentMapCoord 更新是一体的。
+            // 只调 EnterMapPointInternal 会更新坐标/头像，但房间可能是 null
+            // （表现就是“头像到位，不进关卡”）。
+            var travelTask = RunManager.Instance.EnterMapCoord(coord);
+            int floor = coord.row + 1;
             _ = travelTask.ContinueWith(
-                t => LogError("coop-map: EnterMapPointInternal 异常: "
+                t => LogError("coop-map: EnterMapCoord 异常: "
                               + (t.Exception?.InnerException?.Message ?? "?")),
                 TaskContinuationOptions.OnlyOnFaulted);
-            LogError($"coop-map: 单机档(net={netType}) 进房间 floor={floor} "
+            LogError($"coop-map: 单机档(net={netType}) EnterMapCoord floor={floor} "
                      + $"coord=({coord.col},{coord.row}) point={point.PointType} "
-                     + $"addVisited={added} 原位置={beforeText}");
+                     + $"原位置={beforeText}");
 
             // 进房间是异步的；立刻锁掉地图，防止玩家以为没反应又点第二个节点。
             try { NMapScreen.Instance?.SetTravelEnabled(false); } catch { }
