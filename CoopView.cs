@@ -87,6 +87,7 @@ public static partial class CompanionMod
         _evAiSig.Clear();
         _evAiPicked.Clear();
         _evAiAttempts.Clear();
+        _evAiStartHp.Clear();
         _evLocalDoneMs = 0;
         _evForcedProceedLogged = false;
         _evLastForceMs = 0;

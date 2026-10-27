@@ -134,6 +134,7 @@ public static partial class CompanionMod
     private static readonly Dictionary<ulong, int> _evAiAttempts = new();
     private static long _evLastTryMs;
     private static long _evLocalDoneMs;
+    private static readonly Dictionary<ulong, int> _evAiStartHp = new();
     private static bool _evAdvanced;
     private static bool _evForcedProceedLogged;
     private static long _evLastForceMs;
@@ -182,6 +183,7 @@ public static partial class CompanionMod
             _evAiAttempts.Clear();
             _evLastTryMs = 0;
             _evLocalDoneMs = 0;
+            _evAiStartHp.Clear();
             _evAdvanced = false;
             _evForcedProceedLogged = false;
             _evLastForceMs = 0;
@@ -213,6 +215,17 @@ public static partial class CompanionMod
                                   StringComparison.OrdinalIgnoreCase))
             {
                 ForceFinishAiEvent(ev, $"本地已进入新事件 {localEventId}，旧 AI 事件残留");
+            }
+
+            int hpNow = Safe(() => ai.Creature?.CurrentHp ?? 0, 0);
+            if (!_evAiStartHp.ContainsKey(ai.NetId))
+            {
+                _evAiStartHp[ai.NetId] = hpNow;
+            }
+            else if (hpNow < _evAiStartHp[ai.NetId] && ev != null && !ev.IsFinished)
+            {
+                // 真理石板这类“每翻一页扣一次血”的事件，AI 不应继续跟选下一扣血页。
+                ForceFinishAiEvent(ev, "AI 已在事件中扣血，停止继续选择扣血页");
             }
 
             aiEvents[ai.NetId] = ev;
