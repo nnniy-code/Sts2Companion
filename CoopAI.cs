@@ -58,8 +58,14 @@ public static partial class CompanionMod
                 return;
             }
 
-            // 只在“地图界面 + 当前没有房间”时清理；正常事件/战斗选牌不碰。
-            if (runState.CurrentRoom != null) return;
+            // 已经进入房间/事件后必须把临时选择器卸掉，
+            // 否则它会抢答本地的事件选牌。
+            if (runState.CurrentRoom != null)
+            {
+                _staleChoiceSelector?.Dispose();
+                _staleChoiceSelector = null;
+                return;
+            }
             if (Safe(() => CardSelectCmd.Selector, (ICardSelector?)null) != null) return;
 
             _staleChoiceSelector = CardSelectCmd.PushSelector(new AiCardSelector(), false);
@@ -990,6 +996,16 @@ public static partial class CompanionMod
         var screen = NMapScreen.Instance;
         if (screen == null || !screen.IsOpen) return;
 
+        // 新事件已经开始，但上一张地图还盖在上面：关掉地图，露出事件界面。
+        var localEv = Safe(
+            () => RunManager.Instance?.EventSynchronizer?.GetLocalEvent(), (EventModel?)null);
+        if (runState.CurrentRoom is EventRoom && localEv != null && !localEv.IsFinished)
+        {
+            screen.Close(false);
+            LogError("coop-map: 事件已开始但地图仍开着，自动关闭地图");
+            return;
+        }
+
         // 事件结束后游戏会先回到地图，再真正进入下一个房间。
         // 如果这里立刻自动旅行，头像会在地图上往前走，但房间场景没加载，表现就是"不进入关卡"。
         long mapNowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -1294,6 +1310,15 @@ public static partial class CompanionMod
                 {
                     screen.RefreshAllMapPointVotes();
                     LogError("coop-map: 已刷新地图投票图标");
+
+                    // EnterMapCoord 只负责进房间，不会替我们关地图。
+                    // 地图若一直盖在房间上面，本地玩家会看不到事件/战斗。
+                    var rs = RunManager.Instance.DebugOnlyGetState();
+                    if (rs?.CurrentRoom != null && screen.IsOpen)
+                    {
+                        screen.Close(false);
+                        LogError("coop-map: 进入房间后关闭地图");
+                    }
                 }
             }
             catch (Exception ex)
