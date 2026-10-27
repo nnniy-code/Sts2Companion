@@ -84,7 +84,9 @@ public static partial class CompanionMod
     private static readonly Dictionary<ulong, bool> _evAiPicked = new();
     private static readonly Dictionary<ulong, int> _evAiAttempts = new();
     private static long _evLastTryMs;
+    private static long _evLocalDoneMs;
     private static bool _evAdvanced;
+    private static bool _evForcedProceedLogged;
     private static int _evRoomChoices;
     private static int _evProceedRetries;
     private static long _evAdvancedMs;
@@ -128,7 +130,9 @@ public static partial class CompanionMod
             _evAiPicked.Clear();
             _evAiAttempts.Clear();
             _evLastTryMs = 0;
+            _evLocalDoneMs = 0;
             _evAdvanced = false;
+            _evForcedProceedLogged = false;
             _evRoomChoices = 0;
             _evProceedRetries = 0;
             _evZombieLogged = false;
@@ -169,6 +173,48 @@ public static partial class CompanionMod
         }
 
         bool localDone = localEvent.IsFinished;
+        long eventNowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (!localDone)
+        {
+            _evLocalDoneMs = 0;
+        }
+        else if (_evLocalDoneMs == 0)
+        {
+            _evLocalDoneMs = eventNowMs;
+        }
+
+        // 某些事件（例如 WHISPERING_HOLLOW）的 AI 事件会因为卡牌/遗物子界面一直没有 IsFinished，
+        // 本地已经选完却永远等不到 allAiDone。超过 4 秒就强制推进，避免整局卡死。
+        if (!_evAdvanced && localDone && !allAiDone && _evLocalDoneMs > 0
+            && eventNowMs - _evLocalDoneMs > 4000)
+        {
+            if (!_evForcedProceedLogged)
+            {
+                _evForcedProceedLogged = true;
+                LogError("coop-event: 本地已选完但 AI 事件 4 秒未结束，强制推进（跳过 AI 的剩余子界面）");
+            }
+
+            try
+            {
+                if (NEventRoom.Instance != null)
+                {
+                    var task = NEventRoom.Proceed();
+                    _evAdvanced = true;
+                    _evAdvancedMs = eventNowMs;
+                    if (task != null)
+                    {
+                        _ = task.ContinueWith(
+                            t => LogError("coop-event: 强制 Proceed 异常: "
+                                          + (t.Exception?.InnerException?.Message ?? "?")),
+                            TaskContinuationOptions.OnlyOnFaulted);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError("coop-event: 强制 Proceed 崩: " + ex.Message);
+            }
+        }
 
         // ★ 僵尸事件闸门：本地事件已结束、当前页没有任何选项，但 AI 那份还没结束。
         // 这种情况再调 ChooseOptionForEvent 只会把选项效果重放一遍。
