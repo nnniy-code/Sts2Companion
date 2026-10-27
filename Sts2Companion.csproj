@@ -3,7 +3,7 @@
     <TargetFramework>net9.0</TargetFramework>
     <AssemblyName>Sts2Companion</AssemblyName>
     <RootNamespace>Sts2Companion</RootNamespace>
-    <Version>0.4.1</Version>
+    <Version>0.4.2</Version>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
